@@ -17,11 +17,12 @@ import { io, Socket } from 'socket.io-client';
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
 
 // ---- DOM refs ----
-const queryInput     = document.getElementById('queryInput')     as HTMLTextAreaElement;
-const thresholdInput = document.getElementById('thresholdInput') as HTMLInputElement;
+const queryInput        = document.getElementById('queryInput')        as HTMLTextAreaElement;
+const thresholdInput    = document.getElementById('thresholdInput')    as HTMLInputElement;
 const samThresholdInput = document.getElementById('samThresholdInput') as HTMLInputElement;
-const searchBtn      = document.getElementById('searchBtn')      as HTMLButtonElement;
-const connectBtn     = document.getElementById('connectBtn')     as HTMLButtonElement;
+const topKInput         = document.getElementById('topKInput')         as HTMLInputElement;
+const searchBtn         = document.getElementById('searchBtn')         as HTMLButtonElement;
+const connectBtn        = document.getElementById('connectBtn')        as HTMLButtonElement;
 const statusBar      = document.getElementById('statusBar')      as HTMLDivElement;
 const emptyState     = document.getElementById('emptyState')     as HTMLDivElement;
 const resultsWrap    = document.getElementById('resultsWrap')    as HTMLDivElement;
@@ -41,13 +42,15 @@ let connected = false;
 
 interface SamMaskDiag {
   score: number;
+  clip_score: number;
+  combined_score: number;
   box_2d: number[];
-  mask_image: string;      // base64 overlay
+  mask_image: string;
   above_sam_threshold: boolean;
   sam_threshold_used: number;
   has_3d_box: boolean;
   bbox_3d: any | null;
-  dedup_kept?: boolean;    // present only if a detection was created from this mask
+  dedup_kept?: boolean | null;
 }
 
 interface FrameDiag {
@@ -55,9 +58,13 @@ interface FrameDiag {
   frame_idx: number;
   query: string;
   clip_similarity: number;
+  clip_rank: number;
   above_threshold: boolean;
+  in_top_k: boolean;
+  sam_skipped: boolean;
   clip_threshold_used: number;
   sam_threshold_used: number;
+  top_k_used: number;
   thumbnail: string | null;
   resolution?: string;
   sam_masks: SamMaskDiag[];
@@ -69,6 +76,7 @@ interface DebugDetectResponse {
   queries: string[];
   clip_thresholds: Record<string, number>;
   sam_thresholds: Record<string, number>;
+  top_k: number;
   frames: FrameDiag[];
   raw_detection_count: number;
   deduped_detection_count: number;
@@ -80,7 +88,7 @@ interface DebugDetectResponse {
 
 // ---- Last response for filtering ----
 let lastResponse: DebugDetectResponse | null = null;
-type FilterType = 'all' | 'above' | 'sam' | 'detected';
+type FilterType = 'all' | 'above' | 'topk' | 'sam' | 'detected';
 let currentFilter: FilterType = 'all';
 
 // =============================================
@@ -144,14 +152,19 @@ function doSearch(): void {
 
   const clipThreshold = parseFloat(thresholdInput.value) || 0.2;
   const samThreshold = parseFloat(samThresholdInput.value) || 0.3;
+  const topK = parseInt(topKInput.value, 10) || 3;
 
-  showStatus(`Running full detection pipeline for [${queries.join(', ')}] (CLIP≥${clipThreshold}, SAM≥${samThreshold})…`, 'info');
+  showStatus(
+    `Running detection for [${queries.join(', ')}] — CLIP≥${clipThreshold}, SAM≥${samThreshold}, top-K=${topK}…`,
+    'info'
+  );
   searchBtn.disabled = true;
 
   socket.emit('debug_detect', {
     queries,
     clip_thresholds: { default: clipThreshold },
     sam_thresholds: { default: samThreshold },
+    top_k: topK,
   });
 }
 
@@ -170,17 +183,21 @@ function handleDebugResults(data: DebugDetectResponse): void {
   lastResponse = data;
   currentFilter = 'all';
 
-  const { queries, clip_thresholds, sam_thresholds, frames, raw_detection_count,
+  const { queries, clip_thresholds, sam_thresholds, top_k, frames, raw_detection_count,
           deduped_detection_count, detections, total_frames_scanned, query_time_ms } = data;
 
   const clipDefault = clip_thresholds?.default ?? 0.2;
   const samDefault = sam_thresholds?.default ?? 0.3;
   const aboveCount = frames.filter(f => f.above_threshold).length;
+  const topKCount = frames.filter(f => f.in_top_k).length;
   const samCount = frames.filter(f => f.sam_masks.length > 0).length;
+  const skippedCount = frames.filter(f => f.sam_skipped).length;
 
   showStatus(
     `[${queries.join(', ')}] — ${total_frames_scanned} frame-query combos · ` +
-    `${aboveCount} above CLIP (${clipDefault}) · ` +
+    `${aboveCount} above CLIP (≥${clipDefault}) · ` +
+    `${topKCount} in top-${top_k ?? 3} · ` +
+    `${skippedCount} skipped (above but not top-K) · ` +
     `${samCount} with SAM masks (SAM≥${samDefault}) · ` +
     `${raw_detection_count} raw → ${deduped_detection_count} deduped · ` +
     `${query_time_ms}ms`,
@@ -191,9 +208,10 @@ function handleDebugResults(data: DebugDetectResponse): void {
   filterBtns.classList.remove('hidden');
   filterBtns.innerHTML = '';
   const filters: { key: FilterType; label: string; count: number }[] = [
-    { key: 'all', label: 'All frames', count: frames.length },
-    { key: 'above', label: 'Above threshold', count: aboveCount },
-    { key: 'sam', label: 'SAM masks found', count: samCount },
+    { key: 'all',      label: 'All frames',       count: frames.length },
+    { key: 'above',    label: 'Above CLIP thresh', count: aboveCount },
+    { key: 'topk',     label: `Top-${top_k ?? 3} selected`,   count: topKCount },
+    { key: 'sam',      label: 'SAM masks found',  count: samCount },
     { key: 'detected', label: 'Valid detections', count: raw_detection_count },
   ];
   for (const f of filters) {
@@ -218,8 +236,9 @@ function handleDebugResults(data: DebugDetectResponse): void {
 
 function renderFrameGrid(frames: FrameDiag[]): void {
   const filtered = frames.filter(f => {
-    if (currentFilter === 'above') return f.above_threshold;
-    if (currentFilter === 'sam') return f.sam_masks.length > 0;
+    if (currentFilter === 'above')    return f.above_threshold;
+    if (currentFilter === 'topk')     return f.in_top_k;
+    if (currentFilter === 'sam')      return f.sam_masks.length > 0;
     if (currentFilter === 'detected') return f.detections_before_dedup.length > 0;
     return true;
   });
@@ -236,10 +255,28 @@ function renderFrameGrid(frames: FrameDiag[]): void {
     const aboveCls = f.above_threshold ? 'above' : 'below';
     const hasMasks = f.sam_masks.length > 0;
     const hasDets = f.detections_before_dedup.length > 0;
-    card.className = `frame-card ${aboveCls} ${hasMasks ? 'has-masks' : ''} ${hasDets ? 'has-dets' : ''}`;
+    const skipped = f.sam_skipped;
+    card.className = [
+      'frame-card',
+      aboveCls,
+      f.in_top_k  ? 'in-topk'    : '',
+      hasMasks    ? 'has-masks'  : '',
+      hasDets     ? 'has-dets'   : '',
+      skipped     ? 'sam-skipped': '',
+    ].filter(Boolean).join(' ');
 
     const simPct = Math.min(Math.max(f.clip_similarity * 100, 0), 100);
     const simColor = similarityColor(f.clip_similarity);
+
+    // Status badge in top-left corner
+    let statusBadge = '';
+    if (!f.above_threshold) {
+      statusBadge = '<span class="fc-badge fc-badge-below">below CLIP</span>';
+    } else if (skipped) {
+      statusBadge = '<span class="fc-badge fc-badge-skipped">skipped (not top-K)</span>';
+    } else if (f.in_top_k) {
+      statusBadge = `<span class="fc-badge fc-badge-topk">rank #${f.clip_rank}</span>`;
+    }
 
     card.innerHTML = `
       <div class="fc-img">
@@ -248,16 +285,17 @@ function renderFrameGrid(frames: FrameDiag[]): void {
           : `<div class="fc-placeholder">No image</div>`}
         <span class="fc-sim" style="background:${simColor}">${simPct.toFixed(1)}%</span>
         ${hasMasks ? `<span class="fc-badge fc-badge-sam">${f.sam_masks.length} mask${f.sam_masks.length > 1 ? 's' : ''}</span>` : ''}
-        ${!f.above_threshold ? '<span class="fc-badge fc-badge-below">below</span>' : ''}
+        ${statusBadge}
       </div>
       <div class="fc-meta">
         <div class="fc-row"><span>Query</span><span class="mono">${esc(f.query)}</span></div>
-        <div class="fc-row"><span>Submap</span><span>${f.submap_id}</span></div>
-        <div class="fc-row"><span>Frame</span><span>${f.frame_idx}</span></div>
+        <div class="fc-row"><span>Submap / Frame</span><span>${f.submap_id} / ${f.frame_idx}</span></div>
+        <div class="fc-row"><span>CLIP rank</span><span class="mono">#${f.clip_rank} of ${f.top_k_used} selected</span></div>
         <div class="fc-row"><span>CLIP sim</span><span class="mono" style="color:${simColor}">${f.clip_similarity.toFixed(4)}</span></div>
         <div class="fc-row"><span>CLIP thresh</span><span class="mono">${f.clip_threshold_used}</span></div>
         <div class="fc-row"><span>SAM thresh</span><span class="mono">${f.sam_threshold_used}</span></div>
         ${f.resolution ? `<div class="fc-row"><span>Res</span><span class="mono">${f.resolution}</span></div>` : ''}
+        ${skipped ? `<div class="fc-row"><span style="color:#facc15">SAM</span><span style="color:#facc15">skipped — not in top-${f.top_k_used}</span></div>` : ''}
         ${f.sam_error ? `<div class="fc-row fc-error"><span>SAM error</span><span>${esc(f.sam_error)}</span></div>` : ''}
         <div class="fc-bar"><div class="fc-bar-fill" style="width:${simPct}%;background:${simColor}"></div></div>
       </div>
@@ -270,13 +308,11 @@ function renderFrameGrid(frames: FrameDiag[]): void {
 
 function renderSamMasksInline(masks: SamMaskDiag[]): string {
   let html = '<div class="fc-masks">';
-  for (let i = 0; i < masks.length; i++) {
-    const m = masks[i];
-    // Color: red if below SAM threshold, green if kept after dedup, yellow if discarded by dedup or no 3D box
+  for (const m of masks) {
     const maskColor = !m.above_sam_threshold ? '#f87171'
-      : m.dedup_kept === true ? '#4ade80'
+      : m.dedup_kept === true  ? '#4ade80'
       : m.dedup_kept === false ? '#facc15'
-      : m.has_3d_box ? '#4ade80' : '#facc15';
+      : m.has_3d_box           ? '#4ade80' : '#facc15';
     html += `
       <div class="fc-mask-item">
         <img src="data:image/png;base64,${m.mask_image}" />
@@ -284,13 +320,17 @@ function renderSamMasksInline(masks: SamMaskDiag[]): string {
           <span class="fc-mask-score" style="color:${maskColor}">
             SAM ${(m.score * 100).toFixed(1)}%
           </span>
+          <span class="fc-mask-detail mono" style="color:#a1a1aa">
+            CLIP ${(m.clip_score * 100).toFixed(1)}%
+            · combined ${(m.combined_score * 100).toFixed(2)}%
+          </span>
           <span class="fc-mask-detail">
             ${!m.above_sam_threshold
               ? `<span style="color:#f87171">below SAM threshold (${m.sam_threshold_used})</span>`
               : m.has_3d_box ? '3D box: valid' : '3D box: none (insufficient points)'}
           </span>
           ${m.bbox_3d ? `<span class="fc-mask-detail mono">ext: [${m.bbox_3d.extent.map((v: number) => v.toFixed(3)).join(', ')}]</span>` : ''}
-          ${m.dedup_kept === true ? '<span class="fc-mask-detail" style="color:#4ade80">✓ kept after dedup</span>' : ''}
+          ${m.dedup_kept === true  ? '<span class="fc-mask-detail" style="color:#4ade80">✓ kept after dedup</span>' : ''}
           ${m.dedup_kept === false ? '<span class="fc-mask-detail" style="color:#facc15">✗ discarded by dedup</span>' : ''}
         </div>
       </div>
@@ -311,15 +351,19 @@ function renderFinalDetections(detections: any[], queries: string[]): void {
   html += '<div class="det-list">';
   for (const d of detections) {
     const bb = d.bounding_box;
+    const combinedPct = ((d.confidence ?? 0) * 100).toFixed(2);
+    const clipPct  = d.clip_score  != null ? `${(d.clip_score  * 100).toFixed(1)}%` : '—';
+    const samPct   = d.sam_score   != null ? `${(d.sam_score   * 100).toFixed(1)}%` : '—';
     html += `
       <div class="det-card">
         <div class="det-header">
           <span class="det-query">${esc(d.query)}</span>
-          <span class="det-conf">${((d.confidence ?? 0) * 100).toFixed(1)}%</span>
+          <span class="det-conf">${combinedPct}% combined</span>
         </div>
         <div class="det-body">
-          <div class="fc-row"><span>Submap</span><span>${d.matched_submap}</span></div>
-          <div class="fc-row"><span>Frame</span><span>${d.matched_frame}</span></div>
+          <div class="fc-row"><span>Submap / Frame</span><span>${d.matched_submap} / ${d.matched_frame}</span></div>
+          <div class="fc-row"><span>CLIP score</span><span class="mono">${clipPct}</span></div>
+          <div class="fc-row"><span>SAM score</span><span class="mono">${samPct}</span></div>
           ${bb ? `
           <div class="fc-row"><span>Center</span><span class="mono">[${bb.center.map((v: number) => v.toFixed(3)).join(', ')}]</span></div>
           <div class="fc-row"><span>Extent</span><span class="mono">[${bb.extent.map((v: number) => v.toFixed(3)).join(', ')}]</span></div>

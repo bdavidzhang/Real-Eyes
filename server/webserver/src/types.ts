@@ -21,6 +21,10 @@ export interface SLAMUpdate {
   resolved_beacons?: ResolvedBeacon[];
   detections?: DetectionResult[];
   active_queries?: string[];
+  /** Update type: 'full' replaces entire scene, 'incremental' adds a single submap. */
+  type?: 'full' | 'incremental';
+  /** Submap ID for incremental updates. */
+  submap_id?: number;
 }
 
 export interface ResolvedBeacon {
@@ -94,6 +98,15 @@ export interface BatchDetectionResponse {
   results: DetectionResult[];
   total_queries: number;
   error?: string;
+}
+
+/**
+ * Partial detection results streamed progressively during submap-by-submap scanning
+ */
+export interface DetectionPartialResult {
+  detections: DetectionResult[];
+  active_queries: string[];
+  is_final: boolean;
 }
 
 /**

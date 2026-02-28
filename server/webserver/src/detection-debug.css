@@ -266,10 +266,12 @@ body {
   overflow: hidden;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.frame-card.above { border-left: 3px solid var(--accent); }
-.frame-card.below { opacity: 0.6; }
-.frame-card.has-masks { border-left: 3px solid var(--green); }
-.frame-card.has-dets { box-shadow: 0 0 0 1px var(--green); }
+.frame-card.above      { border-left: 3px solid var(--accent); }
+.frame-card.below      { opacity: 0.5; }
+.frame-card.in-topk    { border-left: 3px solid #60a5fa; }
+.frame-card.has-masks  { border-left: 3px solid var(--green); }
+.frame-card.has-dets   { box-shadow: 0 0 0 1px var(--green); }
+.frame-card.sam-skipped { border-left: 3px solid var(--yellow); opacity: 0.75; }
 .frame-card:hover {
   border-color: var(--border-hover);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -323,6 +325,16 @@ body {
 .fc-badge-sam {
   right: 8px;
   background: var(--green);
+  color: #000;
+}
+.fc-badge-topk {
+  left: 8px;
+  background: #60a5fa;
+  color: #000;
+}
+.fc-badge-skipped {
+  left: 8px;
+  background: rgba(250, 204, 21, 0.85);
   color: #000;
 }
 .fc-badge-below {

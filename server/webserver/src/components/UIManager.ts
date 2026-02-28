@@ -248,9 +248,15 @@ export class UIManager {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
-      // Escape closes preview modal
+      // Escape closes preview modal regardless of focus
       if (e.key === 'Escape') {
         this.closePreview();
+        return;
+      }
+      // Don't steal keys while the user is typing in any input/textarea/select
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+          || (e.target as HTMLElement).isContentEditable) {
         return;
       }
       switch (e.key.toLowerCase()) {
@@ -273,9 +279,7 @@ export class UIManager {
           this.toggleSettings();
           break;
         case 'd':
-          if (!(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLInputElement)) {
-            this.toggleDetection();
-          }
+          this.toggleDetection();
           break;
       }
     });

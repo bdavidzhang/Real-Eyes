@@ -11,6 +11,8 @@ class SLAMViewerApp {
   private connection: SLAMConnection;
   private sceneManager: SceneManager;
   private uiManager: UIManager;
+  private totalPoints = 0;
+  private totalCameras = 0;
 
   constructor() {
     console.log('🎨 VGGT-SLAM Viewer initializing...');
@@ -80,6 +82,15 @@ class SLAMViewerApp {
     this.connection.onDetectionPreview((data) => {
       this.uiManager.showDetectionPreview(data);
     });
+
+    // Progressive detection results — update scene and UI on each partial
+    this.connection.onDetectionPartial((data) => {
+      this.sceneManager.updateDetections(data.detections);
+      this.uiManager.updateDetectionResults(data.detections);
+      if (data.active_queries) {
+        this.uiManager.updateDetectionQueries(data.active_queries);
+      }
+    });
   }
 
   /**
@@ -105,6 +116,8 @@ class SLAMViewerApp {
         await this.connection.resetServer();
         this.sceneManager.clearScene();
         this.sceneManager.clearDetections();
+        this.totalPoints = 0;
+        this.totalCameras = 0;
         this.uiManager.updateDetectionResults([]);
         this.uiManager.updateStats({
           frames: 0,
@@ -224,13 +237,22 @@ class SLAMViewerApp {
     // Update visualization
     this.sceneManager.updateVisualization(data);
 
+    // Track accumulated totals for stats
+    if (!data.type || data.type === 'full') {
+      this.totalPoints = data.n_points;
+      this.totalCameras = data.n_cameras;
+    } else {
+      this.totalPoints += data.n_points;
+      this.totalCameras += data.n_cameras;
+    }
+
     // Update stats
     this.uiManager.updateStats({
       frames: data.frame_id,
       submaps: data.num_submaps,
       loops: data.num_loops,
-      points: data.n_points,
-      cameras: data.n_cameras,
+      points: this.totalPoints,
+      cameras: this.totalCameras,
       fps: 0, // FPS is calculated in UIManager
     });
 

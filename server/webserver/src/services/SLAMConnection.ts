@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { SLAMUpdate, ConnectionState, DetectionPreview } from '../types';
+import type { SLAMUpdate, ConnectionState, DetectionPreview, DetectionPartialResult } from '../types';
 
 /**
  * Manages WebSocket connection to SLAM server
@@ -20,6 +20,7 @@ export class SLAMConnection {
   private onStateChangeCallback?: (state: ConnectionState) => void;
   private onErrorCallback?: (error: string) => void;
   private onDetectionPreviewCallback?: (data: DetectionPreview) => void;
+  private onDetectionPartialCallback?: (data: DetectionPartialResult) => void;
 
   constructor(serverUrl: string) {
     this.serverUrl = serverUrl;
@@ -155,6 +156,10 @@ export class SLAMConnection {
     this.onDetectionPreviewCallback = callback;
   }
 
+  onDetectionPartial(callback: (data: DetectionPartialResult) => void): void {
+    this.onDetectionPartialCallback = callback;
+  }
+
   private setupEventHandlers(): void {
     if (!this.socket) return;
 
@@ -198,6 +203,11 @@ export class SLAMConnection {
     this.socket.on('detection_preview', (data: DetectionPreview) => {
       console.log('📸 Detection preview received');
       this.onDetectionPreviewCallback?.(data);
+    });
+
+    this.socket.on('detection_partial', (data: DetectionPartialResult) => {
+      console.log(`🔍 Detection partial: ${data.detections.length} detections, final=${data.is_final}`);
+      this.onDetectionPartialCallback?.(data);
     });
 
     this.socket.on('connect_error', (error) => {

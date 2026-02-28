@@ -18,6 +18,21 @@ function base64ColorsToFloat32(b64: string): Float32Array {
   return out;
 }
 
+/** Concatenate multiple Float32Arrays into one. */
+function concatFloat32Arrays(arrays: Float32Array[]): Float32Array {
+  if (arrays.length === 0) return new Float32Array(0);
+  if (arrays.length === 1) return arrays[0];
+  let totalLen = 0;
+  for (const a of arrays) totalLen += a.length;
+  const result = new Float32Array(totalLen);
+  let offset = 0;
+  for (const a of arrays) {
+    result.set(a, offset);
+    offset += a.length;
+  }
+  return result;
+}
+
 // Color palette for detected object bounding boxes
 const BOX_COLORS = [
   0x4da6ff, 0xff6b6b, 0x51cf66, 0xfcc419, 0xcc5de8,
@@ -65,6 +80,11 @@ export class SceneManager {
     showDetectionBoxes: true,
     showDetectionLabels: true,
   };
+
+  // Accumulated submap buffers for incremental updates
+  private submapBuffers = new Map<number, { pts: Float32Array; cols: Float32Array }>();
+  private allCamPositions: number[][] = [];
+  private allCamRotations: number[][][] = [];
 
   private animationId: number | null = null;
 
@@ -160,46 +180,46 @@ export class SceneManager {
   updateVisualization(data: SLAMUpdate): void {
     try {
       console.log('📊 Processing visualization data:', {
+        type: data.type || 'full',
         points: data.n_points,
         cameras: data.n_cameras,
         submaps: data.num_submaps,
         loops: data.num_loops,
       });
 
-      // Update point cloud
-      if (data.n_points > 0) {
-        let positions: Float32Array;
-        let colors: Float32Array;
+      if (!data.type || data.type === 'full') {
+        // Full replacement — clear all submap buffers
+        this.submapBuffers.clear();
+        this.allCamPositions = data.camera_positions || [];
+        this.allCamRotations = data.camera_rotations || [];
 
-        if (data.points_b64 && data.colors_b64) {
-          // Fast binary path: ~10-100x faster decode than JSON .flat()
-          positions = base64ToFloat32Array(data.points_b64);
-          colors = base64ColorsToFloat32(data.colors_b64);
-        } else if (data.points && data.points.length > 0) {
-          // Legacy JSON fallback
-          positions = new Float32Array(data.points.flat());
-          colors = new Float32Array(data.colors.flat());
-        } else {
-          positions = new Float32Array(0);
-          colors = new Float32Array(0);
+        if (data.n_points > 0) {
+          const { positions, colors } = this.decodePointData(data);
+          if (positions.length > 0) {
+            this.submapBuffers.set(-1, { pts: positions, cols: colors });
+          }
         }
-
-        this.pointCloudGeometry.setAttribute(
-          'position',
-          new THREE.BufferAttribute(positions, 3)
-        );
-        this.pointCloudGeometry.setAttribute(
-          'color',
-          new THREE.BufferAttribute(colors, 3)
-        );
-        this.pointCloudGeometry.computeBoundingSphere();
-
-        console.log(`✅ Point cloud updated: ${positions.length / 3} points`);
+      } else {
+        // Incremental: merge new submap
+        if (data.n_points > 0 && data.submap_id !== undefined) {
+          const { positions, colors } = this.decodePointData(data);
+          if (positions.length > 0) {
+            this.submapBuffers.set(data.submap_id, { pts: positions, cols: colors });
+          }
+        }
+        // Append new cameras
+        if (data.camera_positions && data.camera_positions.length > 0) {
+          this.allCamPositions = [...this.allCamPositions, ...data.camera_positions];
+          this.allCamRotations = [...this.allCamRotations, ...data.camera_rotations];
+        }
       }
 
+      // Rebuild merged point cloud from all submap buffers
+      this.rebuildPointCloud();
+
       // Update cameras
-      if (data.camera_positions && data.camera_positions.length > 0) {
-        this.updateCameras(data.camera_positions, data.camera_rotations);
+      if (this.allCamPositions.length > 0) {
+        this.updateCameras(this.allCamPositions, this.allCamRotations);
       }
 
       // Update beacons
@@ -208,16 +228,57 @@ export class SceneManager {
       }
 
       // Follow latest camera if enabled
-      if (
-        this.config.followCamera &&
-        data.camera_positions &&
-        data.camera_positions.length > 0
-      ) {
-        this.followLatestCamera(data.camera_positions);
+      if (this.config.followCamera && this.allCamPositions.length > 0) {
+        this.followLatestCamera(this.allCamPositions);
       }
     } catch (error) {
       console.error('❌ Visualization error:', error);
     }
+  }
+
+  /**
+   * Decode point positions and colors from a SLAM update payload.
+   * Prefers binary base64 fields; falls back to legacy JSON arrays.
+   */
+  private decodePointData(data: SLAMUpdate): { positions: Float32Array; colors: Float32Array } {
+    if (data.points_b64 && data.colors_b64) {
+      return {
+        positions: base64ToFloat32Array(data.points_b64),
+        colors: base64ColorsToFloat32(data.colors_b64),
+      };
+    } else if (data.points && data.points.length > 0) {
+      return {
+        positions: new Float32Array(data.points.flat()),
+        colors: new Float32Array(data.colors.flat()),
+      };
+    }
+    return { positions: new Float32Array(0), colors: new Float32Array(0) };
+  }
+
+  /**
+   * Rebuild the merged point cloud geometry from all submap buffers.
+   */
+  private rebuildPointCloud(): void {
+    const ptArrays: Float32Array[] = [];
+    const colArrays: Float32Array[] = [];
+    for (const buf of this.submapBuffers.values()) {
+      ptArrays.push(buf.pts);
+      colArrays.push(buf.cols);
+    }
+    const positions = concatFloat32Arrays(ptArrays);
+    const colors = concatFloat32Arrays(colArrays);
+
+    this.pointCloudGeometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(positions, 3)
+    );
+    this.pointCloudGeometry.setAttribute(
+      'color',
+      new THREE.BufferAttribute(colors, 3)
+    );
+    this.pointCloudGeometry.computeBoundingSphere();
+
+    console.log(`✅ Point cloud updated: ${positions.length / 3} points`);
   }
 
   /**
@@ -608,6 +669,11 @@ export class SceneManager {
    * Clear all visualization data
    */
   clearScene(): void {
+    // Clear accumulated submap state
+    this.submapBuffers.clear();
+    this.allCamPositions = [];
+    this.allCamRotations = [];
+
     // Clear point cloud
     this.pointCloudGeometry.setAttribute(
       'position',

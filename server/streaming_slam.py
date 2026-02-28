@@ -33,7 +33,7 @@ class StreamingSLAM:
                  min_disparity=30.0,
                  conf_threshold=25.0,
                  vis_stride=4,
-                 lc_thres=0.80):
+                 lc_thres=0.95):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
 
@@ -92,6 +92,13 @@ class StreamingSLAM:
         # Detection thresholds
         self.detection_clip_thresholds = {"default": 0.15}
         self.detection_sam_thresholds = {"default": 0.80}
+
+        # Cached last stream data (avoid redundant extract_stream_data calls)
+        self._last_stream_data: dict | None = None
+
+        # Incremental extraction cache
+        self._submap_cache: dict[int, dict] = {}
+        self._scene_center: np.ndarray = np.zeros(3)
 
         # External queues (set by app.py)
         self.frame_queue = None
@@ -181,8 +188,13 @@ class StreamingSLAM:
             if loop_closure_detected:
                 print("Loop closure detected!")
 
-            # 5. Extract data for streaming
-            stream_data = self.extract_stream_data()
+            # 5. Extract data for streaming — incremental on normal updates, full on loop closure
+            if loop_closure_detected:
+                stream_data = self.extract_stream_data_full()
+            else:
+                latest = self.solver.map.get_latest_submap()
+                stream_data = self.extract_stream_data_incremental(latest.get_id())
+            self._last_stream_data = stream_data
 
             # 6. Run object detection if queries are active
             with self._detection_lock:
@@ -218,104 +230,159 @@ class StreamingSLAM:
     # Data extraction
     # ------------------------------------------------------------------
 
-    def extract_stream_data(self):
-        """Extract visualization data from all submaps using VGGT-SLAM 2.0 APIs."""
+    def _extract_one_submap(self, submap) -> dict:
+        """Extract points, colors, and camera poses from a single submap."""
+        pts = submap.get_points_in_world_frame(self.solver.graph)
+        cols = submap.get_points_colors()
+        poses = submap.get_all_poses_world(self.solver.graph)
+
+        if self.vis_stride > 1 and pts is not None and len(pts) > 0:
+            pts = pts[::self.vis_stride]
+            cols = cols[::self.vis_stride]
+
+        if cols is not None and len(cols) > 0 and cols.max() > 1.0:
+            cols = cols / 255.0
+
+        cam_positions = [p[:3, 3].tolist() for p in poses]
+        cam_rotations = [p[:3, :3].tolist() for p in poses]
+
+        return {
+            'submap_id': submap.get_id(),
+            'points': pts,
+            'colors': cols,
+            'cam_positions': cam_positions,
+            'cam_rotations': cam_rotations,
+        }
+
+    def extract_stream_data_full(self) -> dict:
+        """Re-extract all submaps. Called on loop closure or get_global_map."""
         try:
             num_submaps = self.solver.map.get_num_submaps()
             if num_submaps == 0:
+                self._submap_cache.clear()
                 return self._empty_data()
 
-            all_points = []
-            all_colors = []
-            all_cam_positions = []
-            all_cam_rotations = []
-
-            stride = self.vis_stride
-
+            self._submap_cache.clear()
             for submap in self.solver.map.get_submaps():
-                # Get points via VGGT-SLAM 2.0 API (requires graph)
-                points_world = submap.get_points_in_world_frame(self.solver.graph)
-                colors = submap.get_points_colors()
+                entry = self._extract_one_submap(submap)
+                self._submap_cache[entry['submap_id']] = entry
 
-                # Get camera poses via VGGT-SLAM 2.0 API (requires graph)
-                cam_poses_world = submap.get_all_poses_world(self.solver.graph)
-
-                if points_world is not None and len(points_world) > 0:
-                    # Apply stride via numpy slicing (VGGT-SLAM 2.0 doesn't have stride param)
-                    if stride > 1:
-                        points_world = points_world[::stride]
-                        colors = colors[::stride]
-
-                    all_points.append(points_world)
-                    if colors.max() > 1.0:
-                        colors = colors / 255.0
-                    all_colors.append(colors)
-
-                # Extract camera poses
-                for cam_pose in cam_poses_world:
-                    position = cam_pose[:3, 3]
-                    rotation = cam_pose[:3, :3]
-                    all_cam_positions.append(position.tolist())
-                    all_cam_rotations.append(rotation.tolist())
-
-            if len(all_points) > 0:
-                all_points = np.vstack(all_points)
-                all_colors = np.vstack(all_colors)
-
-                # Compute scene center and recenter
-                scene_center = np.mean(all_points, axis=0)
-                self.latest_scene_center = scene_center
-                all_points = all_points - scene_center
-
-                # Recenter camera positions
-                all_cam_positions = np.array(all_cam_positions)
-                all_cam_positions = all_cam_positions - scene_center
-            else:
-                all_points = np.zeros((0, 3))
-                all_colors = np.zeros((0, 3))
-                all_cam_positions = np.array([])
-                all_cam_rotations = []
-                scene_center = np.zeros(3)
-
-            # Resolve pending beacons
-            self._resolve_beacons(all_cam_positions)
-
-            n_points = len(all_points)
-            n_cameras = len(all_cam_positions) if isinstance(all_cam_positions, np.ndarray) and all_cam_positions.ndim == 2 else 0
-
-            # Binary encode points/colors — ~10-100x faster than .tolist() and 3x smaller
-            # Positions: float32 (N×3 flat) → base64
-            # Colors:    uint8   (N×3 flat) → base64  (saves 4x vs float32)
-            pts_f32 = all_points.astype(np.float32)
-            cols_u8 = (all_colors * 255).clip(0, 255).astype(np.uint8)
-            points_b64 = base64.b64encode(pts_f32.tobytes()).decode('ascii')
-            colors_b64 = base64.b64encode(cols_u8.tobytes()).decode('ascii')
-
-            cam_pos_list = all_cam_positions.tolist() if n_cameras > 0 else []
-
-            return {
-                'frame_id': self.frame_count,
-                'num_submaps': num_submaps,
-                'num_loops': self.solver.graph.get_num_loops(),
-                'points_b64': points_b64,
-                'colors_b64': colors_b64,
-                'points': [],
-                'colors': [],
-                'camera_positions': cam_pos_list,
-                'camera_rotations': all_cam_rotations,
-                'scene_center': scene_center.tolist(),
-                'n_points': n_points,
-                'n_cameras': n_cameras,
-                'detections': [],
-                'active_queries': list(self.active_queries),
-                'resolved_beacons': self.resolved_beacons,
-            }
+            return self._build_full_payload()
 
         except Exception as e:
             print(f"Extract data error: {e}")
             import traceback
             traceback.print_exc()
             return self._empty_data()
+
+    def extract_stream_data_incremental(self, new_submap_id: int) -> dict:
+        """Extract only the new submap. O(1) submap extraction."""
+        try:
+            submap = self.solver.map.get_submap(new_submap_id)
+            entry = self._extract_one_submap(submap)
+            self._submap_cache[new_submap_id] = entry
+            return self._build_incremental_payload(entry)
+
+        except Exception as e:
+            print(f"Incremental extract error: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._empty_data()
+
+    def extract_stream_data(self):
+        """Backward-compatible alias — full extraction."""
+        return self.extract_stream_data_full()
+
+    def _build_full_payload(self) -> dict:
+        """Build a full payload from all cached submap entries."""
+        all_pts, all_cols, all_cam_pos, all_cam_rot = [], [], [], []
+        for e in self._submap_cache.values():
+            if e['points'] is not None and len(e['points']) > 0:
+                all_pts.append(e['points'])
+                all_cols.append(e['colors'])
+            all_cam_pos.extend(e['cam_positions'])
+            all_cam_rot.extend(e['cam_rotations'])
+
+        if all_pts:
+            pts = np.vstack(all_pts)
+            cols = np.vstack(all_cols)
+            center = np.mean(pts, axis=0)
+            self._scene_center = center
+            self.latest_scene_center = center
+            pts = pts - center
+        else:
+            pts = np.zeros((0, 3))
+            cols = np.zeros((0, 3))
+            center = np.zeros(3)
+
+        cam_arr = np.array(all_cam_pos) - center if all_cam_pos else np.array([])
+
+        # Resolve pending beacons
+        self._resolve_beacons(cam_arr)
+
+        n_points = len(pts)
+        n_cameras = len(cam_arr) if isinstance(cam_arr, np.ndarray) and cam_arr.ndim == 2 else 0
+
+        pts_f32 = pts.astype(np.float32)
+        cols_u8 = (cols * 255).clip(0, 255).astype(np.uint8)
+        points_b64 = base64.b64encode(pts_f32.tobytes()).decode('ascii')
+        colors_b64 = base64.b64encode(cols_u8.tobytes()).decode('ascii')
+
+        return {
+            'type': 'full',
+            'frame_id': self.frame_count,
+            'num_submaps': len(self._submap_cache),
+            'num_loops': self.solver.graph.get_num_loops(),
+            'points_b64': points_b64,
+            'colors_b64': colors_b64,
+            'points': [],
+            'colors': [],
+            'camera_positions': cam_arr.tolist() if n_cameras > 0 else [],
+            'camera_rotations': all_cam_rot,
+            'scene_center': center.tolist(),
+            'n_points': n_points,
+            'n_cameras': n_cameras,
+            'detections': [],
+            'active_queries': list(self.active_queries),
+            'resolved_beacons': self.resolved_beacons,
+        }
+
+    def _build_incremental_payload(self, entry: dict) -> dict:
+        """Build an incremental payload for a single new submap."""
+        pts, cols = entry['points'], entry['colors']
+        if pts is not None and len(pts) > 0:
+            # Use the current scene center for recentering (computed on last full extraction)
+            pts_f32 = (pts - self._scene_center).astype(np.float32)
+            cols_u8 = (cols * 255).clip(0, 255).astype(np.uint8)
+            # Recenter camera positions too
+            cam_pos = (np.array(entry['cam_positions']) - self._scene_center).tolist()
+        else:
+            pts_f32 = np.zeros((0, 3), dtype=np.float32)
+            cols_u8 = np.zeros((0, 3), dtype=np.uint8)
+            cam_pos = entry['cam_positions']
+
+        points_b64 = base64.b64encode(pts_f32.tobytes()).decode('ascii')
+        colors_b64 = base64.b64encode(cols_u8.tobytes()).decode('ascii')
+
+        return {
+            'type': 'incremental',
+            'submap_id': entry['submap_id'],
+            'frame_id': self.frame_count,
+            'num_submaps': self.solver.map.get_num_submaps(),
+            'num_loops': self.solver.graph.get_num_loops(),
+            'points_b64': points_b64,
+            'colors_b64': colors_b64,
+            'points': [],
+            'colors': [],
+            'camera_positions': cam_pos,
+            'camera_rotations': entry['cam_rotations'],
+            'scene_center': self._scene_center.tolist(),
+            'n_points': len(pts_f32),
+            'n_cameras': len(entry['cam_positions']),
+            'detections': [],
+            'active_queries': list(self.active_queries),
+            'resolved_beacons': self.resolved_beacons,
+        }
 
     def _resolve_beacons(self, all_cam_positions):
         """Resolve pending beacons to 3D positions using camera positions."""
@@ -402,10 +469,61 @@ class StreamingSLAM:
 
         self._dedup_and_store()
 
+    def run_detection_progressive(self, queries):
+        """Generator: run CLIP+SAM submap-by-submap, yield partial detections."""
+        with self._detection_lock:
+            old_queries = set(self.active_queries)
+            self.active_queries = [q.strip() for q in queries if q.strip()]
+            new_queries = set(self.active_queries)
+
+        if not self.active_queries:
+            self._sam_cache.clear()
+            with self._detection_lock:
+                self.accumulated_detections = []
+            yield {'detections': [], 'is_final': True}
+            return
+
+        # Purge cache for removed queries
+        removed = old_queries - new_queries
+        if removed:
+            for k in [k for k in self._sam_cache if k[2] in removed]:
+                del self._sam_cache[k]
+
+        added = list(new_queries - old_queries)
+        all_submaps = list(self.solver.map.get_submaps())
+
+        if not added or not all_submaps:
+            self._dedup_and_store()
+            with self._detection_lock:
+                yield {'detections': list(self.accumulated_detections), 'is_final': True}
+            return
+
+        for i, submap in enumerate(all_submaps):
+            try:
+                new_keys = self._run_clip_sam_on_submap(submap, added)
+                if new_keys:
+                    self._compute_bboxes_for_keys(new_keys)
+            except Exception as e:
+                print(f"Detection error submap {submap.get_id()}: {e}")
+
+            self._dedup_and_store()
+            with self._detection_lock:
+                yield {
+                    'detections': list(self.accumulated_detections),
+                    'is_final': i == len(all_submaps) - 1,
+                }
+
+    # Maximum number of frames per submap to run SAM on, chosen by CLIP similarity rank.
+    # Only the top-K most semantically matching frames are segmented, so SAM focuses
+    # on clear, well-composed views rather than every frame that barely clears the threshold.
+    SAM_TOP_K_FRAMES = 3
+
     def _run_clip_sam_on_submap(self, submap, queries):
         """Run CLIP matching + SAM on unprocessed (submap, frame, query) combos.
 
         Uses submap.get_all_semantic_vectors() for CLIP embeddings (VGGT-SLAM 2.0 API).
+        Only the top SAM_TOP_K_FRAMES frames by CLIP similarity are segmented, which
+        focuses SAM on the clearest, most semantically relevant views of the object.
         Returns list of cache keys that got new mask entries.
         """
         od = self.object_detector
@@ -439,16 +557,29 @@ class StreamingSLAM:
             if last_orig is None or last_orig < 0:
                 last_orig = sims.shape[0] - 1
 
+            # Mark all frames as processed (empty) first, then overwrite for top-K
+            candidate_frames = []
             for frame_idx in range(last_orig + 1):
                 cache_key = (submap_id, frame_idx, query)
                 if cache_key in self._sam_cache:
                     continue
-
                 sim_val = sims[frame_idx].item()
                 if sim_val < clip_thresh:
                     self._sam_cache[cache_key] = []
-                    continue
+                else:
+                    candidate_frames.append((sim_val, frame_idx))
 
+            # Sort candidates by CLIP similarity descending; only run SAM on top-K
+            candidate_frames.sort(key=lambda x: x[0], reverse=True)
+            top_frames = candidate_frames[:self.SAM_TOP_K_FRAMES]
+            skipped_frames = candidate_frames[self.SAM_TOP_K_FRAMES:]
+
+            # Mark frames outside top-K as empty so they aren't reconsidered
+            for _, frame_idx in skipped_frames:
+                self._sam_cache[(submap_id, frame_idx, query)] = []
+
+            for sim_val, frame_idx in top_frames:
+                cache_key = (submap_id, frame_idx, query)
                 try:
                     frame_tensor = submap.get_frame_at_index(frame_idx)
                     frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
@@ -462,6 +593,7 @@ class StreamingSLAM:
                                 'mask_2d': mask_2d,
                                 'box_2d': box_2d,
                                 'seg_score': float(seg_score),
+                                'clip_score': float(sim_val),
                                 'bbox_3d': None,
                             })
                     self._sam_cache[cache_key] = passed
@@ -509,18 +641,26 @@ class StreamingSLAM:
                 )
 
     def _dedup_and_store(self):
-        """Build detection list from cache, dedup, store."""
+        """Build detection list from cache, dedup, store.
+
+        Confidence used for ranking is a combined CLIP × SAM score so that the
+        deduplication prefers frames that are both semantically clear (high CLIP)
+        and well-segmented (high SAM), not just whichever had the biggest blob.
+        """
         raw = []
         for (submap_id, frame_idx, query), masks in self._sam_cache.items():
             for entry in masks:
                 bbox = entry.get('bbox_3d')
                 if bbox is None:
                     continue
+                clip_score = entry.get('clip_score', 1.0)
+                seg_score = entry['seg_score']
+                combined = clip_score * seg_score
                 raw.append({
                     "success": True,
                     "query": query,
                     "bounding_box": bbox,
-                    "confidence": entry['seg_score'],
+                    "confidence": combined,
                     "keyframe_image": None,
                     "mask_image": None,
                     "matched_submap": int(submap_id),
@@ -550,6 +690,213 @@ class StreamingSLAM:
         self._dedup_and_store()
 
     # ------------------------------------------------------------------
+    # Debug detection — full pipeline with rich per-frame diagnostics
+    # ------------------------------------------------------------------
+
+    def debug_detect_full(self, queries, clip_thresholds=None, sam_thresholds=None, top_k=None):
+        """Run the full detection pipeline and return rich per-frame diagnostics.
+
+        Does NOT touch _sam_cache or accumulated_detections — purely diagnostic.
+        Respects top_k frame selection and combined CLIP×SAM ranking exactly as
+        production does, so the debug page reflects what production would pick.
+
+        Returns a dict matching the DebugDetectResponse type expected by the frontend.
+        """
+        import time as _time
+        t0 = _time.time()
+
+        od = self.object_detector
+        clip_thresh_map = clip_thresholds or {}
+        sam_thresh_map = sam_thresholds or {}
+        effective_top_k = top_k if (top_k is not None and top_k > 0) else self.SAM_TOP_K_FRAMES
+
+        all_frames_diag = []
+        # Maps (submap_id, frame_idx, query) -> mask diag list for dedup
+        key_to_masks = {}
+
+        all_submaps = list(self.solver.map.get_submaps())
+        if not all_submaps:
+            return {
+                'queries': queries, 'clip_thresholds': clip_thresh_map,
+                'sam_thresholds': sam_thresh_map, 'top_k': effective_top_k,
+                'frames': [], 'raw_detection_count': 0,
+                'deduped_detection_count': 0, 'detections': [],
+                'total_frames_scanned': 0, 'query_time_ms': 0,
+            }
+
+        for submap in all_submaps:
+            submap_id = submap.get_id()
+            clip_embs = submap.get_all_semantic_vectors()
+            if clip_embs is None or len(clip_embs) == 0:
+                continue
+            if isinstance(clip_embs, np.ndarray):
+                clip_embs = torch.from_numpy(clip_embs)
+
+            last_orig = submap.get_last_non_loop_frame_index()
+            if last_orig is None or last_orig < 0:
+                last_orig = clip_embs.shape[0] - 1
+
+            for query in queries:
+                query = query.strip()
+                if not query:
+                    continue
+
+                clip_thresh = clip_thresh_map.get(query, clip_thresh_map.get('default', 0.2))
+                sam_thresh = sam_thresh_map.get(query, sam_thresh_map.get('default', 0.3))
+
+                text_emb = od.encode_text_vector(query)
+                sims = clip_embs @ text_emb  # (S,)
+
+                # Rank all frames by CLIP similarity
+                scored = []
+                for frame_idx in range(last_orig + 1):
+                    scored.append((sims[frame_idx].item(), frame_idx))
+                scored.sort(key=lambda x: x[0], reverse=True)
+
+                candidates_above = [(s, fi) for s, fi in scored if s >= clip_thresh]
+                top_k_set = {fi for _, fi in candidates_above[:effective_top_k]}
+                clip_rank_map = {fi: rank + 1 for rank, (_, fi) in enumerate(scored)}
+
+                for frame_idx in range(last_orig + 1):
+                    sim_val = sims[frame_idx].item()
+                    above = sim_val >= clip_thresh
+                    in_top_k = frame_idx in top_k_set
+                    rank = clip_rank_map.get(frame_idx, frame_idx + 1)
+
+                    # Thumbnail for all frames (cheap)
+                    thumbnail = None
+                    resolution = None
+                    try:
+                        frame_tensor = submap.get_frame_at_index(frame_idx)
+                        frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                        h, w = frame_np.shape[:2]
+                        resolution = f"{w}×{h}"
+                        thumb_h = 120
+                        thumb_w = int(w * thumb_h / h)
+                        thumb = cv2.resize(frame_np, (thumb_w, thumb_h))
+                        thumb_bgr = cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR)
+                        _, buf = cv2.imencode('.jpg', thumb_bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        thumbnail = base64.b64encode(buf.tobytes()).decode('ascii')
+                    except Exception:
+                        pass
+
+                    sam_masks_diag = []
+                    sam_error = None
+                    sam_skipped = above and not in_top_k
+
+                    if in_top_k and above:
+                        try:
+                            frame_tensor = submap.get_frame_at_index(frame_idx)
+                            frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                            frame_pil = Image.fromarray(frame_np)
+                            seg_results = od.segment_all(frame_pil, query)
+
+                            for mask_2d, box_2d, seg_score in seg_results:
+                                above_sam = float(seg_score) >= sam_thresh
+                                combined = sim_val * float(seg_score)
+                                bbox_3d = None
+                                has_3d_box = False
+                                if above_sam:
+                                    try:
+                                        bbox_3d = od.compute_3d_bbox(
+                                            submap, frame_idx, mask_2d,
+                                            self.solver.graph, self.latest_scene_center
+                                        )
+                                        has_3d_box = bbox_3d is not None
+                                    except Exception:
+                                        pass
+
+                                mask_image = None
+                                try:
+                                    mask_image = ObjectDetector.mask_overlay_to_base64(frame_np, mask_2d)
+                                except Exception:
+                                    pass
+
+                                mask_entry = {
+                                    'score': float(seg_score),
+                                    'clip_score': float(sim_val),
+                                    'combined_score': combined,
+                                    'box_2d': [float(v) for v in box_2d],
+                                    'mask_image': mask_image,
+                                    'above_sam_threshold': above_sam,
+                                    'sam_threshold_used': sam_thresh,
+                                    'has_3d_box': has_3d_box,
+                                    'bbox_3d': bbox_3d,
+                                    'dedup_kept': None,
+                                }
+                                sam_masks_diag.append(mask_entry)
+                                if above_sam and has_3d_box:
+                                    key_to_masks.setdefault((submap_id, frame_idx, query), []).append(mask_entry)
+                        except Exception as e:
+                            sam_error = str(e)
+
+                    all_frames_diag.append({
+                        'submap_id': submap_id,
+                        'frame_idx': frame_idx,
+                        'query': query,
+                        'clip_similarity': float(sim_val),
+                        'clip_rank': rank,
+                        'above_threshold': above,
+                        'in_top_k': in_top_k,
+                        'sam_skipped': sam_skipped,
+                        'clip_threshold_used': clip_thresh,
+                        'sam_threshold_used': sam_thresh,
+                        'top_k_used': effective_top_k,
+                        'thumbnail': thumbnail,
+                        'resolution': resolution,
+                        'sam_masks': sam_masks_diag,
+                        'sam_error': sam_error,
+                        'detections_before_dedup': [],
+                    })
+
+        # Build raw detections and deduplicate using combined score
+        raw_detections = []
+        for (submap_id, frame_idx, query), masks in key_to_masks.items():
+            for entry in masks:
+                raw_detections.append({
+                    'success': True,
+                    'query': query,
+                    'bounding_box': entry['bbox_3d'],
+                    'confidence': entry['combined_score'],
+                    'matched_submap': int(submap_id),
+                    'matched_frame': int(frame_idx),
+                    'clip_score': entry['clip_score'],
+                    'sam_score': entry['score'],
+                })
+
+        deduped = ObjectDetector.deduplicate_detections(raw_detections)
+        kept_keys = {(d['matched_submap'], d['matched_frame'], d['query']) for d in deduped}
+
+        # Mark dedup_kept on mask entries
+        for (submap_id, frame_idx, query), masks in key_to_masks.items():
+            kept = (submap_id, frame_idx, query) in kept_keys
+            for m in masks:
+                if m['has_3d_box']:
+                    m['dedup_kept'] = kept
+
+        # Populate detections_before_dedup on frame diag entries
+        raw_by_key = {}
+        for r in raw_detections:
+            raw_by_key.setdefault((r['matched_submap'], r['matched_frame'], r['query']), []).append(r)
+        for fd in all_frames_diag:
+            k = (fd['submap_id'], fd['frame_idx'], fd['query'])
+            fd['detections_before_dedup'] = raw_by_key.get(k, [])
+
+        elapsed_ms = int((_time.time() - t0) * 1000)
+        return {
+            'queries': queries,
+            'clip_thresholds': clip_thresh_map,
+            'sam_thresholds': sam_thresh_map,
+            'top_k': effective_top_k,
+            'frames': all_frames_diag,
+            'raw_detection_count': len(raw_detections),
+            'deduped_detection_count': len(deduped),
+            'detections': deduped,
+            'total_frames_scanned': len(all_frames_diag),
+            'query_time_ms': elapsed_ms,
+        }
+
+    # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
 
@@ -568,6 +915,9 @@ class StreamingSLAM:
         with self._detection_lock:
             self.accumulated_detections = []
         self._sam_cache = {}
+        self._last_stream_data = None
+        self._submap_cache.clear()
+        self._scene_center = np.zeros(3)
 
         self.solver.reset()
         # Re-set clip model after reset

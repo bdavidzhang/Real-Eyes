@@ -64,6 +64,10 @@ _sids_lock = threading.Lock()
 # Background streaming task handle — started once when the first client connects
 _stream_task = None
 
+# The running asyncio event loop, captured when the first async handler fires.
+# Used by sync Flask routes to schedule coroutines thread-safely.
+_event_loop: asyncio.AbstractEventLoop | None = None
+
 # Single-threaded executor for blocking GPU ops (segment_all) so they don't
 # freeze the asyncio event loop while running SAM3 inference
 import concurrent.futures
@@ -182,8 +186,12 @@ def reset():
             break
 
     slam_processor.soft_reset()
-    # Fire-and-forget broadcast — runs in the sio's async loop
-    asyncio.ensure_future(sio.emit('slam_reset', {'status': 'reset'}))
+    # Schedule the broadcast on the ASGI event loop (this route runs in a thread)
+    if _event_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            sio.emit('slam_reset', {'status': 'reset'}),
+            _event_loop,
+        )
 
     return jsonify({
         'status': 'reset_complete',
@@ -245,9 +253,11 @@ def generate_plan():
 # ------------------------------
 @sio.on('connect')
 async def handle_connect(sid, environ, auth):
-    global _stream_task
+    global _stream_task, _event_loop
     if slam_processor is None:
         return
+    # Capture the running event loop so sync Flask routes can schedule coroutines
+    _event_loop = asyncio.get_event_loop()
     with _sids_lock:
         _connected_sids.add(sid)
     print(f"Client connected ({len(_connected_sids)} total)")
@@ -306,28 +316,35 @@ async def handle_stop(sid, data=None):
 async def handle_set_detection_queries(sid, data):
     if slam_processor is None:
         return
-    """Set active object detection queries."""
+    """Set active object detection queries — streams partial results progressively."""
     queries = data.get('queries', [])
     print(f"Detection queries received: {queries}")
-    # set_detection_queries runs CLIP+SAM on all existing submaps when new queries are
-    # added — this is heavy GPU work. Run in executor so the event loop stays alive.
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        _gpu_executor,
-        slam_processor.set_detection_queries,
-        queries,
-    )
 
-    # If we already have submaps, send an immediate update
-    if slam_processor.solver.map.get_num_submaps() > 0:
+    loop = asyncio.get_event_loop()
+    partial_q: asyncio.Queue = asyncio.Queue()
+
+    def run_gen():
         try:
-            stream_data = slam_processor.extract_stream_data()
-            with slam_processor._detection_lock:
-                stream_data['detections'] = list(slam_processor.accumulated_detections)
-                stream_data['active_queries'] = list(slam_processor.active_queries)
-            await sio.emit('slam_update', stream_data, to=sid)
+            for partial in slam_processor.run_detection_progressive(queries):
+                loop.call_soon_threadsafe(partial_q.put_nowait, partial)
         except Exception as e:
-            print(f"  Error sending detection update: {e}")
+            print(f"Progressive detection error: {e}")
+            loop.call_soon_threadsafe(
+                partial_q.put_nowait,
+                {'detections': [], 'is_final': True, 'error': str(e)},
+            )
+
+    _gpu_executor.submit(run_gen)
+
+    while True:
+        partial = await partial_q.get()
+        await sio.emit('detection_partial', {
+            'detections': partial['detections'],
+            'active_queries': list(slam_processor.active_queries),
+            'is_final': partial['is_final'],
+        }, to=sid)
+        if partial['is_final']:
+            break
 
 
 @sio.on('get_detection_preview')
@@ -406,6 +423,38 @@ async def handle_clear_beacons(sid, data=None):
     print("All beacons cleared")
 
 
+@sio.on('debug_detect')
+async def handle_debug_detect(sid, data):
+    if slam_processor is None:
+        await sio.emit('debug_detect_results', {'error': 'SLAM not initialized'}, to=sid)
+        return
+    """Run full detection pipeline and stream back rich per-frame diagnostics."""
+    queries = data.get('queries', [])
+    clip_thresholds = data.get('clip_thresholds', {})
+    sam_thresholds = data.get('sam_thresholds', {})
+    top_k = data.get('top_k', None)
+
+    if not queries:
+        await sio.emit('debug_detect_results', {'error': 'No queries provided'}, to=sid)
+        return
+
+    print(f"Debug detect: {queries} (CLIP={clip_thresholds}, SAM={sam_thresholds}, top_k={top_k})")
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            _gpu_executor,
+            lambda: slam_processor.debug_detect_full(
+                queries, clip_thresholds, sam_thresholds, top_k
+            )
+        )
+        await sio.emit('debug_detect_results', result, to=sid)
+    except Exception as e:
+        print(f"Debug detect error: {e}")
+        import traceback
+        traceback.print_exc()
+        await sio.emit('debug_detect_results', {'error': str(e)}, to=sid)
+
+
 @sio.on('get_global_map')
 async def handle_get_global_map(sid, data=None):
     if slam_processor is None:
@@ -414,7 +463,11 @@ async def handle_get_global_map(sid, data=None):
     print("Client requested global map")
     try:
         if slam_processor.solver.map.get_num_submaps() > 0:
-            stream_data = slam_processor.extract_stream_data()
+            # Use cached full payload if available, otherwise re-extract
+            if slam_processor._last_stream_data and slam_processor._last_stream_data.get('type') == 'full':
+                stream_data = dict(slam_processor._last_stream_data)
+            else:
+                stream_data = slam_processor.extract_stream_data_full()
             with slam_processor._detection_lock:
                 stream_data['detections'] = list(slam_processor.accumulated_detections)
                 stream_data['active_queries'] = list(slam_processor.active_queries)
