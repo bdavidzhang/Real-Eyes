@@ -1,19 +1,15 @@
 """
 Modal deployment for VGGT-SLAM streaming server.
 
-Runs the Flask+SocketIO streaming server on a cloud GPU and provides a public
-HTTPS URL. Users open the URL in a browser to stream camera frames and view
-the live 3D SLAM map.
+Runs the ASGI streaming server on a cloud GPU with a stable public URL.
+Uses @modal.asgi_app() with allow_concurrent_inputs so WebSocket and HTTP
+connections are handled concurrently (no blocking).
 
 Usage:
-    # Launch the streaming server on a remote A100
-    modal run modal_streaming.py
+    modal deploy modal_streaming.py
 
-    # With custom parameters
-    modal run modal_streaming.py --submap-size 8 --min-disparity 30
-
-    # Pre-download model weights (optional, happens automatically on first run)
-    modal run modal_streaming.py::app.download_models
+    # Pre-download model weights (optional)
+    modal run modal_streaming.py::download_models
 """
 
 import modal
@@ -59,14 +55,16 @@ image = (
         # Training utilities (transitive deps)
         "pytorch_metric_learning",
         "pytorch-lightning",
-        # Visualization (unused in streaming mode but imported)
+        # Visualization (unused in streaming mode but imported by solver)
         "viser==0.2.23",
         "matplotlib",
         "gradio",
-        # Streaming server
+        # Streaming server — ASGI for concurrent WebSocket + HTTP
         "flask",
-        "flask-socketio",
         "flask-cors",
+        "python-socketio",
+        "asgiref",
+        "uvicorn",
         "google-generativeai",
         # Misc
         "termcolor",
@@ -89,10 +87,19 @@ image = (
     .run_commands(
         "git clone https://github.com/facebookresearch/perception_models.git"
         " /root/third_party/perception_models"
-        " && pip install -e /root/third_party/perception_models",
+        " && pip install -e /root/third_party/perception_models --no-deps",
     )
     .run_commands(
-        "git clone https://github.com/facebookresearch/sam3.git /root/third_party/sam3"
+        # sam3's training-data import chain pulls in decord + pycocotools which we
+        # don't need for inference. Stub out decord (no Python 3.11 wheel exists),
+        # install pycocotools, then install sam3.
+        "python -c \""
+        "import site, os; p=site.getsitepackages()[0]+'/decord';"
+        "os.makedirs(p,exist_ok=True);"
+        "open(p+'/__init__.py','w').write('cpu=None\\nVideoReader=None')"
+        "\""
+        " && pip install pycocotools"
+        " && git clone https://github.com/facebookresearch/sam3.git /root/third_party/sam3"
         " && pip install -e /root/third_party/sam3",
     )
     # VGGT-SLAM package
@@ -115,12 +122,11 @@ CACHE_PATH = "/root/.cache/torch/hub"
 
 
 # ---------------------------------------------------------------------------
-# Model download (CPU-only)
+# Model download helper (CPU-only)
 # ---------------------------------------------------------------------------
 @app.function(
     image=image,
     volumes={CACHE_PATH: model_cache},
-    secrets=[modal.Secret.from_name("huggingface-secret"), modal.Secret.from_name("gemini-secret")],
     timeout=1800,
 )
 def download_models():
@@ -131,10 +137,9 @@ def download_models():
     ckpt_dir = os.path.join(hub_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # VGGT-1B
     vggt_path = os.path.join(ckpt_dir, "model.pt")
     if not os.path.exists(vggt_path):
-        print("Downloading VGGT-1B model weights...")
+        print("Downloading VGGT-1B...")
         torch.hub.download_url_to_file(
             "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt",
             vggt_path,
@@ -142,10 +147,9 @@ def download_models():
     else:
         print("VGGT-1B: already cached")
 
-    # DINO-Salad
     salad_path = os.path.join(ckpt_dir, "dino_salad.ckpt")
     if not os.path.exists(salad_path):
-        print("Downloading dino_salad checkpoint...")
+        print("Downloading dino_salad...")
         torch.hub.download_url_to_file(
             "https://github.com/serizba/salad/releases/download/v1.0.0/dino_salad.ckpt",
             salad_path,
@@ -153,7 +157,6 @@ def download_models():
     else:
         print("dino_salad: already cached")
 
-    # DINOv2 backbone
     dinov2_repo = os.path.join(hub_dir, "facebookresearch_dinov2_main")
     if not os.path.exists(dinov2_repo):
         print("Downloading DINOv2 backbone...")
@@ -161,84 +164,54 @@ def download_models():
     else:
         print("DINOv2: already cached")
 
-    # PE-Core (Perception Encoder) — downloaded automatically by ObjectDetector
-    # but we trigger it here to pre-cache
-    try:
-        from huggingface_hub import hf_hub_download
-        pe_path = os.path.join(ckpt_dir, "pe_core_l14_336.pt")
-        if not os.path.exists(pe_path):
-            print("Downloading PE-Core CLIP model...")
-            hf_hub_download(
-                repo_id="facebook/PE-Core-L14-336",
-                filename="open_clip_pytorch_model.bin",
-                local_dir=ckpt_dir,
-            )
-        else:
-            print("PE-Core: already cached")
-    except Exception as e:
-        print(f"PE-Core download skipped: {e}")
-
     model_cache.commit()
     print("All model weights cached.")
 
 
 # ---------------------------------------------------------------------------
-# Streaming server (runs on GPU)
+# Streaming server — ASGI with concurrent WebSocket + HTTP
 # ---------------------------------------------------------------------------
-SERVER_PORT = 5000
-
 @app.function(
     image=image,
     gpu="A100-80GB",
     volumes={CACHE_PATH: model_cache},
-    secrets=[modal.Secret.from_name("huggingface-secret"), modal.Secret.from_name("gemini-secret")],
-    timeout=7200,
+    secrets=[
+        modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("gemini-secret"),
+    ],
+    timeout=86400,
     min_containers=1,
+    max_containers=1,
+    allow_concurrent_inputs=100,
 )
-@modal.web_server(port=SERVER_PORT, startup_timeout=600)
-def run_streaming_server():
-    """Start the streaming SLAM server.
-
-    Uses @modal.web_server for a stable URL that auto-wakes the container.
-    Configure via environment variables (set in Modal secrets or dashboard):
-        SUBMAP_SIZE, MIN_DISPARITY, CONF_THRESHOLD, VIS_STRIDE
-    """
+@modal.asgi_app()
+def web():
     import sys
-    import threading
     sys.path.insert(0, "/root/project")
 
-    from server.app import start_server
+    from server.app import asgi_application, initialize
 
     submap_size = int(os.environ.get("SUBMAP_SIZE", "8"))
     min_disparity = float(os.environ.get("MIN_DISPARITY", "30.0"))
     conf_threshold = float(os.environ.get("CONF_THRESHOLD", "25.0"))
     vis_stride = int(os.environ.get("VIS_STRIDE", "4"))
+    frontend_dist = "/root/project/server/webserver/dist"
 
-    # start_server() blocks (socketio.run), so run it in a daemon thread.
-    # @modal.web_server expects this function to return after starting the server.
-    threading.Thread(
-        target=start_server,
-        kwargs=dict(
-            port=SERVER_PORT,
-            submap_size=submap_size,
-            min_disparity=min_disparity,
-            conf_threshold=conf_threshold,
-            vis_stride=vis_stride,
-            serve_static_dir="/root/project/server/webserver/dist",
-        ),
-        daemon=True,
-    ).start()
+    initialize(
+        submap_size=submap_size,
+        min_disparity=min_disparity,
+        conf_threshold=conf_threshold,
+        vis_stride=vis_stride,
+        serve_static_dir=frontend_dist,
+    )
+
+    return asgi_application
 
 
 # ---------------------------------------------------------------------------
-# Local entrypoint — pre-cache models only
+# Local entrypoint
 # ---------------------------------------------------------------------------
 @app.local_entrypoint()
 def main():
-    """Download model weights. The server itself is started via `modal serve` or `modal deploy`."""
-    print("Ensuring model weights are cached...")
-    download_models.remote()
-    print("\nModel weights cached. To start the streaming server:")
-    print("  Development:  modal serve modal_streaming.py")
-    print("  Production:   modal deploy modal_streaming.py")
-    print("\nThe stable URL will be printed in the terminal (*.modal.run).")
+    print("Run `modal deploy modal_streaming.py` to start the server.")
+    print("The stable URL will be printed after deploy completes.")

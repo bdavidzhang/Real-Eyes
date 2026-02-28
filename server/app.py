@@ -1,5 +1,5 @@
 """
-Flask + SocketIO streaming server for VGGT-SLAM 2.0.
+Flask + python-socketio ASGI streaming server for VGGT-SLAM 2.0.
 
 Handles:
   - WebSocket frame streaming from phone/browser
@@ -16,6 +16,7 @@ import threading
 import time
 import base64
 import argparse
+import asyncio
 
 import cv2
 import numpy as np
@@ -24,34 +25,49 @@ import json
 import re
 
 from flask import Flask, jsonify, request
-from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from PIL import Image
+
+import socketio as socketio_pkg
+from asgiref.wsgi import WsgiToAsgi
 
 from server.streaming_slam import StreamingSLAM
 from vggt_slam.object_detector import ObjectDetector
 
 # ------------------------------
-# Flask + SocketIO Setup
+# Flask + python-socketio Setup
 # ------------------------------
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(
-    app,
-    cors_allowed_origins="*",
-    async_mode='threading',
+
+sio = socketio_pkg.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins='*',
     max_http_buffer_size=10_000_000,
     ping_timeout=120,
     ping_interval=25,
 )
+asgi_application = socketio_pkg.ASGIApp(sio, WsgiToAsgi(app))
 
 # Queues for streaming pipeline
 frame_queue = queue.Queue(maxsize=30)
 result_queue = queue.Queue(maxsize=10)
 
-# Global SLAM processor (initialized in __main__)
+# Global SLAM processor (initialized in initialize() or start_server())
 slam_processor = None
 client_connected = threading.Event()
+
+# Track connected socket IDs so we only stop SLAM when the last client leaves
+_connected_sids: set = set()
+_sids_lock = threading.Lock()
+
+# Background streaming task handle — started once when the first client connects
+_stream_task = None
+
+# Single-threaded executor for blocking GPU ops (segment_all) so they don't
+# freeze the asyncio event loop while running SAM3 inference
+import concurrent.futures
+_gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 # ------------------------------
@@ -166,7 +182,8 @@ def reset():
             break
 
     slam_processor.soft_reset()
-    socketio.emit('slam_reset', {'status': 'reset'})
+    # Fire-and-forget broadcast — runs in the sio's async loop
+    asyncio.ensure_future(sio.emit('slam_reset', {'status': 'reset'}))
 
     return jsonify({
         'status': 'reset_complete',
@@ -226,32 +243,49 @@ def generate_plan():
 # ------------------------------
 # SocketIO Events
 # ------------------------------
-@socketio.on('connect')
-def handle_connect():
-    print("Client connected")
+@sio.on('connect')
+async def handle_connect(sid, environ, auth):
+    global _stream_task
+    if slam_processor is None:
+        return
+    with _sids_lock:
+        _connected_sids.add(sid)
+    print(f"Client connected ({len(_connected_sids)} total)")
     client_connected.set()
-    emit('connected', {'status': 'ready'})
+    # Start the result-streaming loop once (it runs forever; survives reconnects)
+    if _stream_task is None or _stream_task.done():
+        _stream_task = asyncio.ensure_future(stream_results())
+    await sio.emit('connected', {'status': 'ready'}, to=sid)
 
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    print("Client disconnected")
-    client_connected.clear()
-    slam_processor.stop()
-    while not frame_queue.empty():
-        try:
-            frame_queue.get_nowait()
-        except Exception:
-            break
-    while not result_queue.empty():
-        try:
-            result_queue.get_nowait()
-        except Exception:
-            break
+@sio.on('disconnect')
+async def handle_disconnect(sid):
+    if slam_processor is None:
+        return
+    with _sids_lock:
+        _connected_sids.discard(sid)
+        remaining = len(_connected_sids)
+    print(f"Client disconnected ({remaining} remaining)")
+    # Only stop SLAM and clear queues when the LAST client leaves
+    if remaining == 0:
+        client_connected.clear()
+        slam_processor.stop()
+        while not frame_queue.empty():
+            try:
+                frame_queue.get_nowait()
+            except Exception:
+                break
+        while not result_queue.empty():
+            try:
+                result_queue.get_nowait()
+            except Exception:
+                break
 
 
-@socketio.on('frame')
-def handle_frame(data):
+@sio.on('frame')
+async def handle_frame(sid, data):
+    if slam_processor is None:
+        return
     if not frame_queue.full():
         frame_queue.put(data)
     # Auto-start SLAM on first frame
@@ -260,18 +294,29 @@ def handle_frame(data):
         slam_processor.start()
 
 
-@socketio.on('stop_slam')
-def handle_stop():
+@sio.on('stop_slam')
+async def handle_stop(sid, data=None):
+    if slam_processor is None:
+        return
     slam_processor.stop()
-    emit('slam_stopped', {'status': 'stopped'})
+    await sio.emit('slam_stopped', {'status': 'stopped'}, to=sid)
 
 
-@socketio.on('set_detection_queries')
-def handle_set_detection_queries(data):
+@sio.on('set_detection_queries')
+async def handle_set_detection_queries(sid, data):
+    if slam_processor is None:
+        return
     """Set active object detection queries."""
     queries = data.get('queries', [])
     print(f"Detection queries received: {queries}")
-    slam_processor.set_detection_queries(queries)
+    # set_detection_queries runs CLIP+SAM on all existing submaps when new queries are
+    # added — this is heavy GPU work. Run in executor so the event loop stays alive.
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        _gpu_executor,
+        slam_processor.set_detection_queries,
+        queries,
+    )
 
     # If we already have submaps, send an immediate update
     if slam_processor.solver.map.get_num_submaps() > 0:
@@ -280,13 +325,15 @@ def handle_set_detection_queries(data):
             with slam_processor._detection_lock:
                 stream_data['detections'] = list(slam_processor.accumulated_detections)
                 stream_data['active_queries'] = list(slam_processor.active_queries)
-            emit('slam_update', stream_data)
+            await sio.emit('slam_update', stream_data, to=sid)
         except Exception as e:
             print(f"  Error sending detection update: {e}")
 
 
-@socketio.on('get_detection_preview')
-def handle_get_detection_preview(data):
+@sio.on('get_detection_preview')
+async def handle_get_detection_preview(sid, data):
+    if slam_processor is None:
+        return
     """Generate and return keyframe + SAM3 mask preview."""
     submap_id = data.get('submap_id')
     frame_idx = data.get('frame_idx')
@@ -295,7 +342,7 @@ def handle_get_detection_preview(data):
     try:
         submap = slam_processor.solver.map.get_submap(submap_id)
         if submap is None:
-            emit('detection_preview', {'error': f'Submap {submap_id} not found'})
+            await sio.emit('detection_preview', {'error': f'Submap {submap_id} not found'}, to=sid)
             return
 
         frame_tensor = submap.get_frame_at_index(frame_idx)
@@ -306,28 +353,38 @@ def handle_get_detection_preview(data):
 
         mask_image = None
         if query:
-            results = slam_processor.object_detector.segment_all(frame_pil, query)
+            # Run SAM3 inference in a thread-pool executor so it doesn't
+            # freeze the asyncio event loop (which would block slam_update too)
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                _gpu_executor,
+                slam_processor.object_detector.segment_all,
+                frame_pil,
+                query,
+            )
             if results:
                 best_mask, _, _ = max(results, key=lambda r: r[2])
                 mask_image = ObjectDetector.mask_overlay_to_base64(frame_np, best_mask)
 
-        emit('detection_preview', {
+        await sio.emit('detection_preview', {
             'query': query,
             'submap_id': submap_id,
             'frame_idx': frame_idx,
             'keyframe_image': keyframe_image,
             'mask_image': mask_image,
-        })
+        }, to=sid)
 
     except Exception as e:
         print(f"Error generating preview: {e}")
         import traceback
         traceback.print_exc()
-        emit('detection_preview', {'error': str(e)})
+        await sio.emit('detection_preview', {'error': str(e)}, to=sid)
 
 
-@socketio.on('place_beacon')
-def handle_place_beacon(data):
+@sio.on('place_beacon')
+async def handle_place_beacon(sid, data):
+    if slam_processor is None:
+        return
     """Queue a beacon request."""
     beacon_id = data.get('beacon_id')
     frame_number = data.get('frame_number', 0)
@@ -336,19 +393,23 @@ def handle_place_beacon(data):
         'frame_number': frame_number,
     })
     print(f"Beacon {beacon_id} queued at frame {frame_number}")
-    emit('beacon_queued', {'beacon_id': beacon_id})
+    await sio.emit('beacon_queued', {'beacon_id': beacon_id}, to=sid)
 
 
-@socketio.on('clear_beacons')
-def handle_clear_beacons():
+@sio.on('clear_beacons')
+async def handle_clear_beacons(sid, data=None):
+    if slam_processor is None:
+        return
     """Clear all pending and resolved beacons."""
     slam_processor.pending_beacons.clear()
     slam_processor.resolved_beacons.clear()
     print("All beacons cleared")
 
 
-@socketio.on('get_global_map')
-def handle_get_global_map():
+@sio.on('get_global_map')
+async def handle_get_global_map(sid, data=None):
+    if slam_processor is None:
+        return
     """Return the current global map state."""
     print("Client requested global map")
     try:
@@ -361,11 +422,11 @@ def handle_get_global_map():
             if stream_data and stream_data['n_points'] > 0:
                 print(f"Sending global map: {stream_data['n_points']} points, "
                       f"{stream_data['n_cameras']} cameras")
-                emit('global_map', stream_data)
+                await sio.emit('global_map', stream_data, to=sid)
             else:
-                emit('global_map', slam_processor._empty_data())
+                await sio.emit('global_map', slam_processor._empty_data(), to=sid)
         else:
-            emit('global_map', slam_processor._empty_data())
+            await sio.emit('global_map', slam_processor._empty_data(), to=sid)
     except Exception as e:
         print(f"Error fetching global map: {e}")
         import traceback
@@ -373,54 +434,45 @@ def handle_get_global_map():
 
 
 # ------------------------------
-# Background Streaming Thread
+# Background Streaming Task
 # ------------------------------
-def stream_results():
+async def stream_results():
     """Stream results to connected clients."""
     while True:
         try:
             if client_connected.is_set():
-                result = result_queue.get(timeout=0.5)
-                socketio.emit('slam_update', result)
-                print(f"Sent update: {result['n_points']} points, "
-                      f"{result['n_cameras']} cameras, "
-                      f"{result['num_submaps']} submaps")
+                try:
+                    result = result_queue.get_nowait()
+                    await sio.emit('slam_update', result)
+                    print(f"Sent update: {result['n_points']} points, "
+                          f"{result['n_cameras']} cameras, "
+                          f"{result['num_submaps']} submaps")
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
             else:
-                socketio.sleep(0.1)
-        except queue.Empty:
-            socketio.sleep(0.1)
+                await asyncio.sleep(0.1)
         except Exception as e:
             print(f"Stream emit error: {e}")
-            socketio.sleep(0.1)
-
-
-threading.Thread(target=stream_results, daemon=True).start()
+            await asyncio.sleep(0.1)
 
 
 # ------------------------------
 # Server Startup
 # ------------------------------
-def start_server(
-    port=5000,
+def initialize(
     submap_size=8,
     min_disparity=30.0,
     conf_threshold=25.0,
     vis_stride=4,
-    video=None,
-    fast=False,
-    video_fps=2.0,
     serve_static_dir=None,
 ):
-    """Start the streaming SLAM server.
+    """Initialize SLAM processor and static routes.
 
-    Args:
-        serve_static_dir: If set, serve built frontend files from this directory
-            (used by Modal where there's no Vite dev server). When None, the
-            frontend is expected to run separately (e.g. via ``npm run dev``).
+    Called from Modal's ASGI entrypoint or from start_server() for local dev.
+    Does NOT start a server — the ASGI framework handles all serving.
     """
     global slam_processor
 
-    # Serve built frontend if directory provided (Modal deployment)
     if serve_static_dir:
         from flask import send_from_directory
 
@@ -432,7 +484,6 @@ def start_server(
         def serve_static(path):
             return send_from_directory(serve_static_dir, path)
 
-    # Initialize SLAM processor
     slam_processor = StreamingSLAM(
         submap_size=submap_size,
         min_disparity=min_disparity,
@@ -441,6 +492,42 @@ def start_server(
     )
     slam_processor.frame_queue = frame_queue
     slam_processor.result_queue = result_queue
+    # Note: stream_results() is started lazily on first client connect (handle_connect)
+    # because asyncio.ensure_future() requires a running event loop.
+
+    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'
+    print("=" * 60)
+    print("VGGT-SLAM 2.0 Streaming Server — initialized")
+    print(f"GPU: {gpu}  |  submap_size={submap_size}  |  vis_stride={vis_stride}")
+    if serve_static_dir:
+        print(f"Serving frontend from: {serve_static_dir}")
+    print("=" * 60)
+
+
+def start_server(
+    port=5000,
+    submap_size=8,
+    min_disparity=30.0,
+    conf_threshold=25.0,
+    vis_stride=4,
+    video=None,
+    fast=False,
+    video_fps=2.0,
+    serve_static_dir=None,
+):
+    """Start the streaming SLAM server locally using uvicorn.
+
+    Args:
+        serve_static_dir: If set, serve built frontend files from this directory.
+            When None, the frontend is expected to run separately (e.g. via ``npm run dev``).
+    """
+    initialize(
+        submap_size=submap_size,
+        min_disparity=min_disparity,
+        conf_threshold=conf_threshold,
+        vis_stride=vis_stride,
+        serve_static_dir=serve_static_dir,
+    )
 
     # Start video feeder if provided
     video_feeder = None
@@ -448,15 +535,15 @@ def start_server(
         video_feeder = VideoFeeder(video, fast=fast, target_fps=video_fps)
         video_feeder.start()
 
-    # SSL context for HTTPS (required for phone camera access)
-    # Skip when serving static (Modal tunnel provides HTTPS)
-    ssl_context = None
+    # SSL for HTTPS (required for phone camera access)
+    ssl_certfile = None
+    ssl_keyfile = None
     if not serve_static_dir:
         cert_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.cert')
         key_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.key')
         if os.path.exists(cert_path) and os.path.exists(key_path):
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+            ssl_certfile = cert_path
+            ssl_keyfile = key_path
             print(f"SSL enabled: {cert_path}")
         else:
             print("Warning: SSL certs not found. HTTPS disabled. "
@@ -475,16 +562,17 @@ def start_server(
     print(f"Temp directory: {slam_processor.temp_dir}")
     if serve_static_dir:
         print(f"Serving frontend from: {serve_static_dir}")
-    print(f"Server: {'https' if ssl_context else 'http'}://0.0.0.0:{port}")
+    proto = 'https' if ssl_certfile else 'http'
+    print(f"Server: {proto}://0.0.0.0:{port}")
     print("=" * 60)
 
-    socketio.run(
-        app,
+    import uvicorn
+    uvicorn.run(
+        asgi_application,
         host='0.0.0.0',
         port=port,
-        debug=False,
-        allow_unsafe_werkzeug=True,
-        ssl_context=ssl_context,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
 
 

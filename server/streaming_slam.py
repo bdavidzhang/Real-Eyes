@@ -155,6 +155,14 @@ class StreamingSLAM:
     def process_submap(self):
         """Process a submap batch — run VGGT, optimize graph, extract data, detect objects."""
         try:
+            # Guard: skip if any saved images are missing (e.g. after a reset mid-batch)
+            valid_names = [p for p in self.image_names_subset if os.path.exists(p)]
+            if not valid_names:
+                print("process_submap: all image files missing, skipping")
+                self.image_names_subset = []
+                return
+            self.image_names_subset = valid_names
+
             # 1. Run predictions (uses stored clip model via solver)
             predictions = self.solver.run_predictions(
                 self.image_names_subset,
@@ -272,17 +280,32 @@ class StreamingSLAM:
             # Resolve pending beacons
             self._resolve_beacons(all_cam_positions)
 
+            n_points = len(all_points)
+            n_cameras = len(all_cam_positions) if isinstance(all_cam_positions, np.ndarray) and all_cam_positions.ndim == 2 else 0
+
+            # Binary encode points/colors — ~10-100x faster than .tolist() and 3x smaller
+            # Positions: float32 (N×3 flat) → base64
+            # Colors:    uint8   (N×3 flat) → base64  (saves 4x vs float32)
+            pts_f32 = all_points.astype(np.float32)
+            cols_u8 = (all_colors * 255).clip(0, 255).astype(np.uint8)
+            points_b64 = base64.b64encode(pts_f32.tobytes()).decode('ascii')
+            colors_b64 = base64.b64encode(cols_u8.tobytes()).decode('ascii')
+
+            cam_pos_list = all_cam_positions.tolist() if n_cameras > 0 else []
+
             return {
                 'frame_id': self.frame_count,
                 'num_submaps': num_submaps,
                 'num_loops': self.solver.graph.get_num_loops(),
-                'points': all_points.tolist(),
-                'colors': all_colors.tolist(),
-                'camera_positions': all_cam_positions.tolist() if len(all_cam_positions) > 0 else [],
+                'points_b64': points_b64,
+                'colors_b64': colors_b64,
+                'points': [],
+                'colors': [],
+                'camera_positions': cam_pos_list,
                 'camera_rotations': all_cam_rotations,
                 'scene_center': scene_center.tolist(),
-                'n_points': len(all_points),
-                'n_cameras': len(all_cam_positions) if isinstance(all_cam_positions, np.ndarray) and all_cam_positions.ndim == 2 else 0,
+                'n_points': n_points,
+                'n_cameras': n_cameras,
                 'detections': [],
                 'active_queries': list(self.active_queries),
                 'resolved_beacons': self.resolved_beacons,
@@ -325,6 +348,8 @@ class StreamingSLAM:
             'frame_id': self.frame_count,
             'num_submaps': 0,
             'num_loops': 0,
+            'points_b64': '',
+            'colors_b64': '',
             'points': [],
             'colors': [],
             'camera_positions': [],

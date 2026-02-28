@@ -2,6 +2,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SLAMUpdate, ControlsConfig, ResolvedBeacon, DetectionResult } from '../types';
 
+/** Decode a base64 string into a Float32Array (used for point positions). */
+function base64ToFloat32Array(b64: string): Float32Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+
+/** Decode a base64 string of uint8 color bytes into a Float32Array in [0,1]. */
+function base64ColorsToFloat32(b64: string): Float32Array {
+  const binary = atob(b64);
+  const out = new Float32Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i) / 255.0;
+  return out;
+}
+
 // Color palette for detected object bounding boxes
 const BOX_COLORS = [
   0x4da6ff, 0xff6b6b, 0x51cf66, 0xfcc419, 0xcc5de8,
@@ -151,9 +167,22 @@ export class SceneManager {
       });
 
       // Update point cloud
-      if (data.points && data.points.length > 0) {
-        const positions = new Float32Array(data.points.flat());
-        const colors = new Float32Array(data.colors.flat());
+      if (data.n_points > 0) {
+        let positions: Float32Array;
+        let colors: Float32Array;
+
+        if (data.points_b64 && data.colors_b64) {
+          // Fast binary path: ~10-100x faster decode than JSON .flat()
+          positions = base64ToFloat32Array(data.points_b64);
+          colors = base64ColorsToFloat32(data.colors_b64);
+        } else if (data.points && data.points.length > 0) {
+          // Legacy JSON fallback
+          positions = new Float32Array(data.points.flat());
+          colors = new Float32Array(data.colors.flat());
+        } else {
+          positions = new Float32Array(0);
+          colors = new Float32Array(0);
+        }
 
         this.pointCloudGeometry.setAttribute(
           'position',

@@ -6,6 +6,11 @@ export interface SLAMUpdate {
   frame_id: number;
   num_submaps: number;
   num_loops: number;
+  /** Binary-encoded point positions: base64(float32 N×3 flat). Preferred over `points`. */
+  points_b64?: string;
+  /** Binary-encoded point colors: base64(uint8 N×3 flat, values 0-255). Preferred over `colors`. */
+  colors_b64?: string;
+  /** Legacy JSON arrays — empty when binary fields are present. */
   points: number[][];
   colors: number[][];
   camera_positions: number[][];
