@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { SLAMUpdate, ConnectionState, DetectionPreview, DetectionPartialResult } from '../types';
+import type { SLAMUpdate, ConnectionState, DetectionPreview, DetectionPartialResult, AgentThought, AgentAction, AgentFinding, AgentState } from '../types';
 
 /**
  * Manages WebSocket connection to SLAM server
@@ -21,6 +21,12 @@ export class SLAMConnection {
   private onErrorCallback?: (error: string) => void;
   private onDetectionPreviewCallback?: (data: DetectionPreview) => void;
   private onDetectionPartialCallback?: (data: DetectionPartialResult) => void;
+
+  // Agent callbacks
+  private onAgentThoughtCallback?: (data: AgentThought) => void;
+  private onAgentActionCallback?: (data: AgentAction) => void;
+  private onAgentFindingCallback?: (data: AgentFinding) => void;
+  private onAgentStateCallback?: (data: AgentState) => void;
 
   constructor(serverUrl: string) {
     this.serverUrl = serverUrl;
@@ -244,6 +250,21 @@ export class SLAMConnection {
     this.socket.on('detection_partial', (data: DetectionPartialResult) => {
       console.log(`🔍 Detection partial: ${data.detections.length} detections, final=${data.is_final}`);
       this.onDetectionPartialCallback?.(data);
+    // Agent events
+    this.socket.on('agent_thought', (data: AgentThought) => {
+      this.onAgentThoughtCallback?.(data);
+    });
+
+    this.socket.on('agent_action', (data: AgentAction) => {
+      this.onAgentActionCallback?.(data);
+    });
+
+    this.socket.on('agent_finding', (data: AgentFinding) => {
+      this.onAgentFindingCallback?.(data);
+    });
+
+    this.socket.on('agent_state', (data: AgentState) => {
+      this.onAgentStateCallback?.(data);
     });
 
     this.socket.on('connect_error', (error) => {
@@ -260,6 +281,48 @@ export class SLAMConnection {
       console.error('❌ Socket error:', error);
       this.onErrorCallback?.(error.toString());
     });
+  }
+
+  // Agent event callback setters
+  onAgentThought(callback: (data: AgentThought) => void): void {
+    this.onAgentThoughtCallback = callback;
+  }
+
+  onAgentAction(callback: (data: AgentAction) => void): void {
+    this.onAgentActionCallback = callback;
+  }
+
+  onAgentFinding(callback: (data: AgentFinding) => void): void {
+    this.onAgentFindingCallback = callback;
+  }
+
+  onAgentState(callback: (data: AgentState) => void): void {
+    this.onAgentStateCallback = callback;
+  }
+
+  // Agent emit methods
+  sendAgentChat(message: string): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('agent_chat', { message });
+    }
+  }
+
+  setAgentGoal(goal: string): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('agent_set_goal', { goal });
+    }
+  }
+
+  toggleAgent(enabled: boolean): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('agent_toggle', { enabled });
+    }
+  }
+
+  requestAgentState(): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('get_agent_state');
+    }
   }
 
   private setConnectionState(state: ConnectionState): void {

@@ -177,6 +177,46 @@
       <div id="detectionResultsList" class="detection-results-list"></div>
     </div>
 
+    <!-- Spatial Agent Panel -->
+    <div id="agent-panel" class="glass-panel">
+      <div class="agent-header">
+        <div class="agent-header-left">
+          <span class="agent-indicator"></span>
+          <span class="agent-title">Spatial Agent</span>
+        </div>
+        <button id="agent-toggle-btn" class="active">ON</button>
+      </div>
+
+      <div class="agent-status-bar">
+        <span><span class="label">Room:</span> <span id="agent-room-type">Scanning...</span></span>
+        <div class="agent-coverage-wrap">
+          <span class="label">Coverage:</span>
+          <div class="agent-coverage-track">
+            <div id="agent-coverage-bar"></div>
+          </div>
+          <span id="agent-coverage-text">0%</span>
+        </div>
+      </div>
+
+      <div class="agent-section-header">Activity</div>
+      <div id="agent-activity-feed"></div>
+
+      <div class="agent-section-header">Missions</div>
+      <div id="agent-missions">
+        <div class="agent-missions-empty">No active missions</div>
+      </div>
+
+      <div class="agent-chat-section">
+        <input
+          type="text"
+          id="agent-chat-input"
+          placeholder="Ask the agent..."
+          autocomplete="off"
+        />
+        <button id="agent-chat-send">Send</button>
+      </div>
+    </div>
+
     <!-- Detection Preview Modal -->
     <div id="detection-preview-overlay" class="preview-overlay hidden">
       <div class="preview-modal">
@@ -204,6 +244,7 @@
       <button id="resetViewBtn">Reset View</button>
       <button id="settingsBtn" class="icon" title="Settings (S)">⚙</button>
       <button id="toggleDetectionBtn" title="Detection Panel (D)">🎯 Detection</button>
+      <button id="toggleAgentBtn" title="Agent Panel (A)">🤖 Agent</button>
       <a href="/sender.html" class="nav-link">Camera Streamer</a>
       <a href="/summary.html" class="nav-link" id="summaryLink">📊 Summary</a>
     </div>

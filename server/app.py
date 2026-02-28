@@ -418,30 +418,60 @@ def stop_demo():
     """Stop active demo video feeder."""
     _stop_demo_feeder()
     return jsonify({'status': 'demo_stopped'})
+# Lazy-initialized OpenRouter client for the /api/plan route
+_plan_client = None
+
+def _get_plan_client():
+    global _plan_client
+    if _plan_client is None:
+        from openai import OpenAI
+        api_key = os.environ.get('OPENROUTER_API_KEY', '')
+        if not api_key:
+            raise RuntimeError('OPENROUTER_API_KEY not set')
+        _plan_client = OpenAI(
+            base_url='https://openrouter.ai/api/v1',
+            api_key=api_key,
+            timeout=15.0,
+        )
+    return _plan_client
 
 
 @app.route('/api/plan', methods=['POST'])
 def generate_plan():
-    """Generate a tracking plan from a natural language prompt using Claude."""
+    """Generate a tracking plan from a natural language prompt via OpenRouter."""
     data = request.get_json() or {}
     prompt = data.get('prompt', '')
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=os.environ['GEMINI_API_KEY'])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(
-            f'Given this scenario: "{prompt}"\n'
-            'Return JSON with this exact format:\n'
-            '{"objects": ["obj1", "obj2"], '
-            '"waypoints_justification": "1-2 sentences", '
-            '"pathfinding_justification": "1-2 sentences"}\n'
-            'Objects should be concrete, visible, physical items trackable in 3D space. '
-            'Return only the JSON, no extra text.'
+        client = _get_plan_client()
+        response = client.chat.completions.create(
+            model='anthropic/claude-3.5-haiku-20241022',
+            messages=[
+                {
+                    'role': 'system',
+                    'content': (
+                        'You extract concrete, visible physical objects from a user scenario '
+                        'for 3D spatial tracking. Always respond with valid JSON only.'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': (
+                        f'Given this scenario: "{prompt}"\n'
+                        'Return JSON with this exact format:\n'
+                        '{"objects": ["obj1", "obj2"], '
+                        '"waypoints_justification": "1-2 sentences", '
+                        '"pathfinding_justification": "1-2 sentences"}\n'
+                        'Objects should be concrete, visible, physical items trackable in 3D space.'
+                    ),
+                },
+            ],
+            max_tokens=256,
+            temperature=0.3,
+            response_format={'type': 'json_object'},
         )
-        content = response.text
-        match = re.search(r'\{[\s\S]*\}', content)
-        result = json.loads(match.group())
+        content = response.choices[0].message.content
+        result = json.loads(content)
         return jsonify({
             'objects': result.get('objects', []),
             'waypoints': {
@@ -706,6 +736,55 @@ async def handle_get_global_map(sid, data=None):
 
 
 # ------------------------------
+# Spatial Agent SocketIO Events
+# ------------------------------
+@sio.on('agent_chat')
+async def handle_agent_chat(sid, data):
+    if slam_processor is None or slam_processor.spatial_agent is None:
+        return
+    message = data.get('message', '')
+    if not message:
+        return
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        slam_processor.spatial_agent.handle_user_message,
+        message,
+    )
+
+
+@sio.on('agent_set_goal')
+async def handle_agent_set_goal(sid, data):
+    if slam_processor is None or slam_processor.spatial_agent is None:
+        return
+    goal = data.get('goal', '')
+    if goal:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            slam_processor.spatial_agent.set_goal,
+            goal,
+        )
+
+
+@sio.on('agent_toggle')
+async def handle_agent_toggle(sid, data):
+    if slam_processor is None or slam_processor.spatial_agent is None:
+        return
+    enabled = data.get('enabled', True)
+    slam_processor.spatial_agent.enabled = enabled
+    await sio.emit('agent_state', slam_processor.spatial_agent.get_state(), to=sid)
+
+
+@sio.on('get_agent_state')
+async def handle_get_agent_state(sid, data=None):
+    if slam_processor is None or slam_processor.spatial_agent is None:
+        await sio.emit('agent_state', {'enabled': False}, to=sid)
+        return
+    await sio.emit('agent_state', slam_processor.spatial_agent.get_state(), to=sid)
+
+
+# ------------------------------
 # Background Streaming Task
 # ------------------------------
 async def stream_results():
@@ -766,6 +845,29 @@ def initialize(
     slam_processor.result_queue = result_queue
     # Note: stream_results() is started lazily on first client connect (handle_connect)
     # because asyncio.ensure_future() requires a running event loop.
+
+    # Initialize spatial agent if OpenRouter API key is available
+    openrouter_key = os.environ.get('OPENROUTER_API_KEY')
+    if openrouter_key:
+        from server.spatial_agent import SpatialAgent
+
+        def _agent_emit(event, data):
+            """Emit agent events to all connected clients (thread-safe)."""
+            # sio.start_background_task is the python-socketio sanctioned way
+            # to emit from non-async (background thread) contexts.
+            try:
+                sio.start_background_task(sio.emit, event, data)
+            except Exception as e:
+                print(f"Agent emit error: {e}")
+
+        slam_processor.spatial_agent = SpatialAgent(
+            streaming_slam=slam_processor,
+            emit_fn=_agent_emit,
+            openrouter_api_key=openrouter_key,
+        )
+        print("Spatial Agent initialized (OpenRouter API key found)")
+    else:
+        print("Spatial Agent disabled (no OPENROUTER_API_KEY)")
 
     gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'
     print("=" * 60)

@@ -120,3 +120,57 @@ export interface DetectionPreview {
   mask_image?: string;       // base64 PNG
   error?: string;
 }
+
+// ------------------------------------------------------------------
+// Spatial Agent types
+// ------------------------------------------------------------------
+
+export interface AgentThought {
+  id: string;
+  timestamp: number;
+  type: 'observation' | 'thinking' | 'chat_response' | 'error' | 'action';
+  content: string;
+  keyframe_b64?: string;
+}
+
+export interface AgentAction {
+  id: string;
+  timestamp: number;
+  action: string;          // mission_created | mission_completed | queries_updated
+  details: string;
+  mission_id?: number;
+  queries?: string[];
+}
+
+export interface AgentFinding {
+  id: string;
+  timestamp: number;
+  query: string;
+  description: string;
+  confidence: number;
+  position?: number[];
+  mission_id?: number;
+}
+
+export interface MissionState {
+  id: number;
+  category: string;
+  goal: string;
+  queries: string[];
+  found: string[];
+  status: 'active' | 'completed' | 'stalled';
+  confidence: number;
+  findings_count: number;
+}
+
+export interface AgentState {
+  enabled: boolean;
+  scene_description: string;
+  room_type: string;
+  missions: MissionState[];
+  active_queries: string[];
+  discovered_objects: string[];
+  current_goal: string | null;
+  submaps_processed: number;
+  coverage_estimate: number;
+}

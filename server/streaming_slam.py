@@ -104,6 +104,9 @@ class StreamingSLAM:
         self.frame_queue = None
         self.result_queue = None
 
+        # Spatial agent (set by app.py if GEMINI_API_KEY is available)
+        self.spatial_agent = None
+
         print(f"Temp directory: {self.temp_dir}")
 
     def start(self):
@@ -214,6 +217,15 @@ class StreamingSLAM:
             # 7. Send to result queue
             if stream_data and self.result_queue is not None and not self.result_queue.full():
                 self.result_queue.put(stream_data)
+
+            # 7b. Trigger spatial agent analysis in background
+            if self.spatial_agent is not None:
+                current_submap_id = self.solver.map.get_num_submaps() - 1
+                threading.Thread(
+                    target=self.spatial_agent.on_submap_processed,
+                    args=(current_submap_id,),
+                    daemon=True,
+                ).start()
 
             # 8. Keep overlapping frames
             self.image_names_subset = self.image_names_subset[-self.overlapping_window_size:]
@@ -951,6 +963,10 @@ class StreamingSLAM:
         except Exception:
             pass
         self.temp_dir = tempfile.mkdtemp()
+
+        # Reset spatial agent if present
+        if self.spatial_agent is not None:
+            self.spatial_agent.reset()
 
         print(f"Soft reset complete. New temp dir: {self.temp_dir}")
 

@@ -1,0 +1,385 @@
+/* ================================================
+   Spatial Agent Panel Styles
+   ================================================ */
+
+/* Agent Panel — slides in from the right, same position as detection panel */
+#agent-panel {
+  position: absolute;
+  top: 70px;
+  right: -420px;
+  width: 400px;
+  max-height: calc(100vh - 140px);
+  padding: 16px;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+#agent-panel.open {
+  right: 24px;
+}
+
+/* Header */
+.agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.agent-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  animation: pulse 3s ease-in-out infinite;
+}
+
+.agent-title {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+#agent-toggle-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  transition: var(--transition);
+}
+
+#agent-toggle-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+/* Status bar */
+.agent-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.agent-status-bar .label {
+  color: var(--text-tertiary);
+}
+
+.agent-coverage-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.agent-coverage-track {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#agent-coverage-bar {
+  height: 100%;
+  background: var(--text-primary);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+  width: 0%;
+}
+
+#agent-coverage-text {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  min-width: 30px;
+  text-align: right;
+}
+
+/* Section headers */
+.agent-section-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 4px;
+}
+
+/* Activity Feed */
+#agent-activity-feed {
+  flex: 1;
+  min-height: 120px;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+#agent-activity-feed::-webkit-scrollbar {
+  width: 4px;
+}
+
+#agent-activity-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#agent-activity-feed::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+}
+
+.agent-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  animation: agent-entry-in 0.3s ease;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+@keyframes agent-entry-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent-entry-icon {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  user-select: none;
+  width: 16px;
+}
+
+.agent-entry-content {
+  flex: 1;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.agent-entry-time {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+/* Entry type styles */
+.agent-entry-observation .agent-entry-content {
+  color: var(--text-primary);
+}
+
+.agent-entry-thinking .agent-entry-icon {
+  animation: blink 1.5s ease-in-out infinite;
+}
+
+.agent-entry-action .agent-entry-content {
+  color: var(--text-secondary);
+}
+
+.agent-entry-finding {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-entry-finding .agent-entry-content {
+  color: var(--text-primary);
+}
+
+.agent-entry-error .agent-entry-content {
+  color: #ff6b6b;
+}
+
+.agent-entry-user {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-entry-user .agent-entry-content {
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+.agent-entry-chat_response .agent-entry-content {
+  color: var(--text-primary);
+}
+
+/* Missions */
+#agent-missions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+.agent-missions-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 12px;
+}
+
+.agent-mission-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  transition: var(--transition);
+}
+
+.agent-mission-card.completed {
+  opacity: 0.5;
+}
+
+.agent-mission-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.agent-mission-category {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.agent-mission-progress {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.agent-mission-queries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.agent-mission-query {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 3px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.agent-mission-query.found {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-mission-bar-container {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.agent-mission-bar {
+  height: 100%;
+  background: var(--text-primary);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* Chat input */
+.agent-chat-section {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--panel-border);
+}
+
+#agent-chat-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: var(--font-body, 'Inter', sans-serif);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#agent-chat-input:focus {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+#agent-chat-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+#agent-chat-send {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--panel-border);
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+#agent-chat-send:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  #agent-panel {
+    width: calc(100vw - 48px);
+    right: -100vw;
+  }
+
+  #agent-panel.open {
+    right: 24px;
+  }
+}
+
+/* Agent toggle button in controls bar */
+#toggleAgentBtn {
+  position: relative;
+}
+
+#toggleAgentBtn.active {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}

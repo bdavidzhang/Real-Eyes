@@ -1,8 +1,10 @@
 import { SLAMConnection } from './services/SLAMConnection';
 import { SceneManager } from './services/SceneManager';
 import { UIManager } from './components/UIManager';
+import { AgentPanel } from './components/AgentPanel';
 import type { SLAMUpdate } from './types';
 import './styles/dashboard.css';
+import './styles/agent.css';
 
 /**
  * Main Application Class
@@ -11,6 +13,7 @@ class SLAMViewerApp {
   private connection: SLAMConnection;
   private sceneManager: SceneManager;
   private uiManager: UIManager;
+  private agentPanel: AgentPanel;
   private totalPoints = 0;
   private totalCameras = 0;
   private trackingSource: 'live' | 'demo' = 'live';
@@ -27,11 +30,13 @@ class SLAMViewerApp {
 
     this.sceneManager = new SceneManager(container);
     this.uiManager = new UIManager();
+    this.agentPanel = new AgentPanel();
     const serverUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
     this.connection = new SLAMConnection(serverUrl);
 
     this.setupConnections();
     this.setupEventHandlers();
+    this.setupAgentHandlers();
     this.loadIncomingTrackingPlan();
 
     console.log('✅ VGGT-SLAM Viewer ready!');
@@ -242,6 +247,61 @@ class SLAMViewerApp {
       const config = this.sceneManager.getConfig();
       this.sceneManager.updateConfig({ showDetectionBoxes: !config.showDetectionBoxes });
       this.uiManager.updateControlStates(this.sceneManager.getConfig());
+    });
+  }
+
+  /**
+   * Setup agent panel event wiring
+   */
+  private setupAgentHandlers(): void {
+    // Agent events from server → agent panel
+    this.connection.onAgentThought((data) => {
+      this.agentPanel.handleThought(data);
+    });
+
+    this.connection.onAgentAction((data) => {
+      this.agentPanel.handleAction(data);
+    });
+
+    this.connection.onAgentFinding((data) => {
+      this.agentPanel.handleFinding(data);
+      this.uiManager.showNotification(`Found: ${data.query}`, 'success');
+    });
+
+    this.connection.onAgentState((data) => {
+      this.agentPanel.handleState(data);
+    });
+
+    // Agent panel → server
+    this.agentPanel.onChatSend((message) => {
+      this.connection.sendAgentChat(message);
+    });
+
+    this.agentPanel.onAgentToggle((enabled) => {
+      this.connection.toggleAgent(enabled);
+    });
+
+    // Agent toggle button in controls bar
+    const toggleAgentBtn = document.getElementById('toggleAgentBtn');
+    if (toggleAgentBtn) {
+      toggleAgentBtn.addEventListener('click', () => {
+        this.agentPanel.toggle();
+        toggleAgentBtn.classList.toggle('active', this.agentPanel.isOpen());
+      });
+    }
+
+    // Keyboard shortcut: A for agent panel
+    document.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      if (e.key.toLowerCase() === 'a') {
+        this.agentPanel.toggle();
+        toggleAgentBtn?.classList.toggle('active', this.agentPanel.isOpen());
+      }
+    });
+
+    // Request agent state on connect
+    this.connection.onConnect(() => {
+      setTimeout(() => this.connection.requestAgentState(), 200);
     });
   }
 
