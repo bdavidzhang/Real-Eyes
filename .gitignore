@@ -31,6 +31,8 @@ __pycache__/
 *.text
 *.pcd
 *.json
+!server/webserver/package.json
+!server/webserver/package-lock.json
 
 datasets
 logs

@@ -17,7 +17,7 @@ import './sender.css';
  * handles walk-through (beacon appears behind camera when you pass it).
  */
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || `https://${window.location.hostname}:5000`;
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
 
 // ── DOM Elements ──
 const video = document.getElementById('video') as HTMLVideoElement;

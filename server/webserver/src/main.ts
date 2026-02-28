@@ -23,7 +23,7 @@ class SLAMViewerApp {
 
     this.sceneManager = new SceneManager(container);
     this.uiManager = new UIManager();
-    const serverUrl = import.meta.env.VITE_SERVER_URL || `https://${window.location.hostname}:5000`;
+    const serverUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
     this.connection = new SLAMConnection(serverUrl);
 
     this.setupConnections();

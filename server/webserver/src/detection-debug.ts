@@ -14,7 +14,7 @@ import './detection-debug.css';
 import { io, Socket } from 'socket.io-client';
 
 // ---- Server URL (must match server.py) ----
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || `https://${window.location.hostname}:5000`;
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
 
 // ---- DOM refs ----
 const queryInput     = document.getElementById('queryInput')     as HTMLTextAreaElement;

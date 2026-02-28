@@ -20,7 +20,10 @@ import argparse
 import cv2
 import numpy as np
 import torch
-from flask import Flask, jsonify
+import json
+import re
+
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from PIL import Image
@@ -38,6 +41,8 @@ socketio = SocketIO(
     cors_allowed_origins="*",
     async_mode='threading',
     max_http_buffer_size=10_000_000,
+    ping_timeout=120,
+    ping_interval=25,
 )
 
 # Queues for streaming pipeline
@@ -167,6 +172,55 @@ def reset():
         'status': 'reset_complete',
         'message': 'SLAM data cleared, model still loaded',
     })
+
+
+@app.route('/api/plan', methods=['POST'])
+def generate_plan():
+    """Generate a tracking plan from a natural language prompt using Claude."""
+    data = request.get_json() or {}
+    prompt = data.get('prompt', '')
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=os.environ['GEMINI_API_KEY'])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(
+            f'Given this scenario: "{prompt}"\n'
+            'Return JSON with this exact format:\n'
+            '{"objects": ["obj1", "obj2"], '
+            '"waypoints_justification": "1-2 sentences", '
+            '"pathfinding_justification": "1-2 sentences"}\n'
+            'Objects should be concrete, visible, physical items trackable in 3D space. '
+            'Return only the JSON, no extra text.'
+        )
+        content = response.text
+        match = re.search(r'\{[\s\S]*\}', content)
+        result = json.loads(match.group())
+        return jsonify({
+            'objects': result.get('objects', []),
+            'waypoints': {
+                'enabled': True,
+                'justification': result.get('waypoints_justification', 'Waypoints mark key locations.'),
+            },
+            'pathfinding': {
+                'enabled': True,
+                'justification': result.get('pathfinding_justification', 'Pathfinding visualizes your traversed route.'),
+            },
+        })
+    except Exception as e:
+        print(f'Plan generation error: {e}; falling back to keyword extraction')
+        stopwords = {
+            'i', 'a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'and',
+            'or', 'my', 'me', 'we', 'is', 'are', 'was', 'want', 'need',
+            'track', 'find', 'locate', 'using', 'with', 'this', 'that',
+        }
+        words = [w.strip('.,!?') for w in prompt.lower().split()]
+        objects = list(dict.fromkeys([w for w in words if w and w not in stopwords]))[:5]
+        return jsonify({
+            'objects': objects or ['object'],
+            'waypoints': {'enabled': True, 'justification': 'Waypoints help mark key locations.'},
+            'pathfinding': {'enabled': True, 'justification': 'Pathfinding visualizes your traversed route.'},
+        })
 
 
 # ------------------------------
@@ -344,6 +398,97 @@ threading.Thread(target=stream_results, daemon=True).start()
 
 
 # ------------------------------
+# Server Startup
+# ------------------------------
+def start_server(
+    port=5000,
+    submap_size=8,
+    min_disparity=30.0,
+    conf_threshold=25.0,
+    vis_stride=4,
+    video=None,
+    fast=False,
+    video_fps=2.0,
+    serve_static_dir=None,
+):
+    """Start the streaming SLAM server.
+
+    Args:
+        serve_static_dir: If set, serve built frontend files from this directory
+            (used by Modal where there's no Vite dev server). When None, the
+            frontend is expected to run separately (e.g. via ``npm run dev``).
+    """
+    global slam_processor
+
+    # Serve built frontend if directory provided (Modal deployment)
+    if serve_static_dir:
+        from flask import send_from_directory
+
+        @app.route('/')
+        def serve_index():
+            return send_from_directory(serve_static_dir, 'index.html')
+
+        @app.route('/<path:path>')
+        def serve_static(path):
+            return send_from_directory(serve_static_dir, path)
+
+    # Initialize SLAM processor
+    slam_processor = StreamingSLAM(
+        submap_size=submap_size,
+        min_disparity=min_disparity,
+        conf_threshold=conf_threshold,
+        vis_stride=vis_stride,
+    )
+    slam_processor.frame_queue = frame_queue
+    slam_processor.result_queue = result_queue
+
+    # Start video feeder if provided
+    video_feeder = None
+    if video:
+        video_feeder = VideoFeeder(video, fast=fast, target_fps=video_fps)
+        video_feeder.start()
+
+    # SSL context for HTTPS (required for phone camera access)
+    # Skip when serving static (Modal tunnel provides HTTPS)
+    ssl_context = None
+    if not serve_static_dir:
+        cert_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.cert')
+        key_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.key')
+        if os.path.exists(cert_path) and os.path.exists(key_path):
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+            print(f"SSL enabled: {cert_path}")
+        else:
+            print("Warning: SSL certs not found. HTTPS disabled. "
+                  "Phone camera streaming requires HTTPS.")
+
+    print("=" * 60)
+    print("VGGT-SLAM 2.0 Streaming Server")
+    print("=" * 60)
+    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+    if video:
+        print(f"Video input: {video} ({video_fps} fps, "
+              f"{'fast' if fast else 'real-time'})")
+    else:
+        print("Input: live WebSocket feed")
+    print(f"Submap size: {submap_size}")
+    print(f"Temp directory: {slam_processor.temp_dir}")
+    if serve_static_dir:
+        print(f"Serving frontend from: {serve_static_dir}")
+    print(f"Server: {'https' if ssl_context else 'http'}://0.0.0.0:{port}")
+    print("=" * 60)
+
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=port,
+        debug=False,
+        allow_unsafe_werkzeug=True,
+        ssl_context=ssl_context,
+    )
+
+
+# ------------------------------
 # Main
 # ------------------------------
 if __name__ == '__main__':
@@ -370,53 +515,13 @@ if __name__ == '__main__':
         print(f"Video file not found: {args.video}")
         exit(1)
 
-    # Initialize SLAM processor
-    slam_processor = StreamingSLAM(
+    start_server(
+        port=args.port,
         submap_size=args.submap_size,
         min_disparity=args.min_disparity,
         conf_threshold=args.conf_threshold,
         vis_stride=args.vis_stride,
-    )
-    slam_processor.frame_queue = frame_queue
-    slam_processor.result_queue = result_queue
-
-    # Start video feeder if provided
-    video_feeder = None
-    if args.video:
-        video_feeder = VideoFeeder(args.video, fast=args.fast, target_fps=args.video_fps)
-        video_feeder.start()
-
-    # SSL context for HTTPS (required for phone camera access)
-    ssl_context = None
-    cert_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.cert')
-    key_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.key')
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
-        print(f"SSL enabled: {cert_path}")
-    else:
-        print("Warning: SSL certs not found. HTTPS disabled. "
-              "Phone camera streaming requires HTTPS.")
-
-    print("=" * 60)
-    print("VGGT-SLAM 2.0 Streaming Server")
-    print("=" * 60)
-    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-    if args.video:
-        print(f"Video input: {args.video} ({args.video_fps} fps, "
-              f"{'fast' if args.fast else 'real-time'})")
-    else:
-        print("Input: live WebSocket feed")
-    print(f"Submap size: {args.submap_size}")
-    print(f"Temp directory: {slam_processor.temp_dir}")
-    print(f"Server: {'https' if ssl_context else 'http'}://0.0.0.0:{args.port}")
-    print("=" * 60)
-
-    socketio.run(
-        app,
-        host='0.0.0.0',
-        port=args.port,
-        debug=False,
-        allow_unsafe_werkzeug=True,
-        ssl_context=ssl_context,
+        video=args.video,
+        fast=args.fast,
+        video_fps=args.video_fps,
     )

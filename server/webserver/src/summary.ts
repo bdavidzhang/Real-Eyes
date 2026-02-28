@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupViewerControls();
   showConnectingMessage();
 
-  const serverUrl = import.meta.env.VITE_SERVER_URL || `https://${window.location.hostname}:5000`;
+  const serverUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   connection = new SLAMConnection(serverUrl);
 
   connection.onUpdate((data: SLAMUpdate) => {

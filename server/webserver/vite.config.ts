@@ -33,10 +33,14 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 3000,
-    https: {
-      key: fs.readFileSync(resolve(__dirname, 'server.key')),
-      cert: fs.readFileSync(resolve(__dirname, 'server.cert')),
-    },
+    ...(fs.existsSync(resolve(__dirname, 'server.key')) && fs.existsSync(resolve(__dirname, 'server.cert'))
+      ? {
+          https: {
+            key: fs.readFileSync(resolve(__dirname, 'server.key')),
+            cert: fs.readFileSync(resolve(__dirname, 'server.cert')),
+          },
+        }
+      : {}),
     warmup: {
       clientFiles: [
         './src/landing.ts',
