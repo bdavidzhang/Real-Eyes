@@ -13,6 +13,8 @@ class SLAMViewerApp {
   private uiManager: UIManager;
   private totalPoints = 0;
   private totalCameras = 0;
+  private trackingSource: 'live' | 'demo' = 'live';
+  private demoVideoId: string | null = null;
 
   constructor() {
     console.log('🎨 VGGT-SLAM Viewer initializing...');
@@ -108,6 +110,19 @@ class SLAMViewerApp {
     this.uiManager.onDisconnect(() => {
       this.connection.disconnect();
     });
+
+    const stopDemoBtn = document.getElementById('stopDemoBtn') as HTMLButtonElement | null;
+    if (stopDemoBtn) {
+      stopDemoBtn.addEventListener('click', async () => {
+        try {
+          await this.connection.stopDemo();
+          this.connection.stopSLAM();
+          this.uiManager.showNotification('Demo stopped. Current map is kept.', 'info');
+        } catch (error) {
+          this.uiManager.showNotification('Failed to stop demo', 'error');
+        }
+      });
+    }
 
     // Reset button
     this.uiManager.onReset(async () => {
@@ -272,6 +287,39 @@ class SLAMViewerApp {
   private loadIncomingTrackingPlan(): void {
     const params = new URLSearchParams(window.location.search);
     const source = params.get('source');
+    const modeParam = params.get('mode');
+    const videoParam = params.get('video_id');
+
+    const sessionTrackingSource = sessionStorage.getItem('trackingSource');
+    this.trackingSource = (sessionTrackingSource === 'demo' || modeParam === 'demo')
+      ? 'demo'
+      : 'live';
+    this.demoVideoId = sessionStorage.getItem('demoVideoId') || videoParam;
+
+    const viewerModeBadge = document.getElementById('viewerModeBadge') as HTMLDivElement | null;
+    const senderLink = document.querySelector('.nav-link[href^="/sender.html"]') as HTMLAnchorElement | null;
+    const stopDemoBtn = document.getElementById('stopDemoBtn') as HTMLButtonElement | null;
+
+    if (senderLink) {
+      if (this.trackingSource === 'demo' && this.demoVideoId) {
+        senderLink.href = `/sender.html?mode=demo&video_id=${encodeURIComponent(this.demoVideoId)}`;
+      } else {
+        senderLink.href = '/sender.html';
+      }
+    }
+    if (viewerModeBadge) {
+      if (this.trackingSource === 'demo') {
+        viewerModeBadge.style.display = 'inline-flex';
+        viewerModeBadge.textContent = this.demoVideoId
+          ? `DEMO MODE - ${this.demoVideoId}`
+          : 'DEMO MODE';
+      } else {
+        viewerModeBadge.style.display = 'none';
+      }
+    }
+    if (stopDemoBtn) {
+      stopDemoBtn.style.display = this.trackingSource === 'demo' ? 'inline-flex' : 'none';
+    }
 
     if (source === 'plan') {
       // Read data from sessionStorage
@@ -281,14 +329,32 @@ class SLAMViewerApp {
 
       if (objectsJson) {
         const objects: string[] = JSON.parse(objectsJson);
-        console.log('📦 Loaded tracking plan:', { objects, waypoints, pathfinding });
+        console.log('📦 Loaded tracking plan:', {
+          objects,
+          waypoints,
+          pathfinding,
+          trackingSource: this.trackingSource,
+          demoVideoId: this.demoVideoId,
+        });
 
         // Auto-populate detection input
         this.uiManager.populateDetectionInput(objects);
 
         // Auto-connect and set detection queries
-        setTimeout(() => {
+        setTimeout(async () => {
           this.connection.connect();
+
+          try {
+            if (this.trackingSource === 'demo' && this.demoVideoId) {
+              await this.connection.startDemo(this.demoVideoId, 10);
+              this.uiManager.showNotification(`Demo mode: ${this.demoVideoId}`, 'info');
+            } else {
+              await this.connection.stopDemo();
+            }
+          } catch (error) {
+            console.error('Demo mode request failed:', error);
+            this.uiManager.showNotification('Failed to configure demo mode', 'error');
+          }
 
           setTimeout(() => {
             this.connection.setDetectionQueries(objects);
@@ -301,6 +367,8 @@ class SLAMViewerApp {
         sessionStorage.removeItem('trackedObjects');
         sessionStorage.removeItem('waypointsEnabled');
         sessionStorage.removeItem('pathfindingEnabled');
+        sessionStorage.removeItem('trackingSource');
+        sessionStorage.removeItem('demoVideoId');
       }
     }
   }

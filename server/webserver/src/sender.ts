@@ -18,6 +18,9 @@ import './sender.css';
  */
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || window.location.origin;
+const params = new URLSearchParams(window.location.search);
+let senderMode: 'live' | 'demo' = params.get('mode') === 'demo' ? 'demo' : 'live';
+let demoVideoId: string | null = params.get('video_id');
 
 // ── DOM Elements ──
 const video = document.getElementById('video') as HTMLVideoElement;
@@ -39,6 +42,7 @@ const buttonModeBtn = document.getElementById('buttonModeBtn') as HTMLButtonElem
 const placeBeaconBtn = document.getElementById('placeBeaconBtn') as HTMLButtonElement;
 const clearBeaconsBtn = document.getElementById('clearBeaconsBtn') as HTMLButtonElement;
 const beaconStatus = document.getElementById('beaconStatus') as HTMLElement;
+const senderModeBadge = document.getElementById('senderModeBadge') as HTMLDivElement | null;
 
 // ── State ──
 let socket: Socket | null = null;
@@ -182,6 +186,13 @@ const HAND_COOLDOWN_MS = 3000;
 // ── Camera Init ──
 // ══════════════════════════════════════════
 
+interface DemoStatusResponse {
+  running: boolean;
+  video_id?: string | null;
+  started_at?: number | null;
+  target_fps?: number | null;
+}
+
 async function initCamera(): Promise<void> {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -198,6 +209,67 @@ async function initCamera(): Promise<void> {
     console.error('Camera error:', error);
     updateStatus('error', `Camera error: ${(error as Error).message}`);
   }
+}
+
+async function fetchDemoStatus(): Promise<DemoStatusResponse | null> {
+  try {
+    const response = await fetch('/api/demo/status');
+    if (!response.ok) return null;
+    return await response.json() as DemoStatusResponse;
+  } catch {
+    return null;
+  }
+}
+
+function waitForMetadata(el: HTMLVideoElement): Promise<void> {
+  if (el.readyState >= 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onLoaded = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error('Failed to load video metadata'));
+    };
+    const cleanup = () => {
+      el.removeEventListener('loadedmetadata', onLoaded);
+      el.removeEventListener('error', onError);
+    };
+    el.addEventListener('loadedmetadata', onLoaded);
+    el.addEventListener('error', onError);
+  });
+}
+
+async function initDemoPreview(statusOverride?: DemoStatusResponse | null): Promise<void> {
+  const status = statusOverride ?? await fetchDemoStatus();
+  if (!demoVideoId && status?.video_id) {
+    demoVideoId = status.video_id;
+  }
+  if (!demoVideoId) {
+    throw new Error('No demo video selected');
+  }
+
+  video.srcObject = null;
+  video.muted = true;
+  video.loop = true;
+  video.src = `/api/demo/video?video_id=${encodeURIComponent(demoVideoId)}`;
+
+  await waitForMetadata(video);
+  if (status?.started_at && Number.isFinite(status.started_at)) {
+    const elapsed = Math.max(0, Date.now() / 1000 - status.started_at);
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      video.currentTime = Math.min(video.duration - 0.05, elapsed % video.duration);
+    }
+  }
+  await video.play();
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  resizeArOverlay();
+  window.addEventListener('resize', resizeArOverlay);
+  updateStatus('disconnected', `Demo preview ready: ${demoVideoId}`);
+  console.log(`Demo preview initialized: ${demoVideoId} (${video.videoWidth}x${video.videoHeight})`);
 }
 
 function resizeArOverlay(): void {
@@ -298,6 +370,7 @@ function updateFps(): void {
 
 // ── Frame Capture & Send ──
 function sendFrame(): void {
+  if (senderMode === 'demo') return;
   if (!streaming || !socket?.connected) return;
   try {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -321,6 +394,10 @@ function placeBeacon(): void {
   const color = BEACON_COLORS[(id - 1) % BEACON_COLORS.length];
   const estimatedPos = cameraPath.length > 0 ? cameraPath[cameraPath.length - 1] : { x: 0, z: 0 };
 
+  const beaconFrameNumber = senderMode === 'demo'
+    ? Math.max(0, Math.floor(video.currentTime * 10))
+    : frameSentCounter;
+
   const beacon: Beacon = {
     id,
     name,
@@ -328,7 +405,7 @@ function placeBeacon(): void {
     z: estimatedPos.z,
     y: 0,
     pending: true,
-    frameNumber: frameSentCounter,
+    frameNumber: beaconFrameNumber,
     placementOri: { ...smoothOrientation },
     color,
     displayState: 'flash',
@@ -341,7 +418,7 @@ function placeBeacon(): void {
   drawMinimap();
 
   if (socket?.connected) {
-    socket.emit('place_beacon', { beacon_id: id, frame_number: frameSentCounter });
+    socket.emit('place_beacon', { beacon_id: id, frame_number: beaconFrameNumber });
   }
 
   setTimeout(() => {
@@ -864,13 +941,17 @@ function startStreaming(): void {
   socket = io(SERVER_URL, { transports: ['websocket', 'polling'], reconnection: true });
 
   socket.on('connect', () => {
-    updateStatus('connected');
-    socket!.emit('start_slam');
+    updateStatus('connected', senderMode === 'demo' ? 'Connected - Demo Preview' : 'Connected - Streaming');
+    if (senderMode === 'live') {
+      socket!.emit('start_slam');
+    }
     streaming = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
     handDetectionActive = true;
-    streamInterval = setInterval(sendFrame, 100);
+    if (senderMode === 'live') {
+      streamInterval = setInterval(sendFrame, 100);
+    }
     startArLoop();
   });
 
@@ -1027,8 +1108,35 @@ stopBtn.addEventListener('click', stopStreaming);
 
 // ── Init ──
 window.addEventListener('DOMContentLoaded', () => {
-  initCamera();
-  initDeviceOrientation();
-  initHandTracking();
-  drawMinimap();
+  (async () => {
+    const status = await fetchDemoStatus();
+    const hasActiveDemo = Boolean(status?.running && status?.video_id);
+    if (senderMode !== 'demo' && hasActiveDemo) {
+      senderMode = 'demo';
+      demoVideoId = status?.video_id ?? demoVideoId;
+    }
+
+    if (senderMode === 'demo') {
+      if (senderModeBadge) {
+        senderModeBadge.style.display = 'inline-flex';
+        senderModeBadge.textContent = demoVideoId ? `DEMO MODE - ${demoVideoId}` : 'DEMO MODE';
+      }
+      startBtn.textContent = 'Connect (Demo)';
+      handModeBtn.disabled = true;
+      handModeBtn.classList.remove('active');
+      buttonModeBtn.classList.add('active');
+      beaconMode = 'button';
+      placeBeaconBtn.style.display = 'block';
+      beaconStatus.textContent = 'Demo mode: button beacon placement';
+      initDemoPreview(status).catch((error) => {
+        console.error('Demo preview init error:', error);
+        updateStatus('error', `Demo preview error: ${(error as Error).message}`);
+      });
+    } else {
+      initCamera();
+      initHandTracking();
+    }
+    initDeviceOrientation();
+    drawMinimap();
+  })();
 });

@@ -17,6 +17,7 @@ import time
 import base64
 import argparse
 import asyncio
+import mimetypes
 
 import cv2
 import numpy as np
@@ -24,7 +25,7 @@ import torch
 import json
 import re
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from PIL import Image
 
@@ -73,6 +74,17 @@ _event_loop: asyncio.AbstractEventLoop | None = None
 import concurrent.futures
 _gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
+# Demo mode (pre-recorded local videos)
+_DEMO_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'}
+_demo_lock = threading.Lock()
+_demo_video_feeder = None
+_demo_active_video_id = None
+_demo_active_video_path = None
+_demo_started_at = None
+_demo_target_fps = None
+_demo_thumbnail_cache = {}
+_demo_catalog_cache = None
+
 
 # ------------------------------
 # Video File Feeder (testing mode)
@@ -95,6 +107,8 @@ class VideoFeeder:
 
     def stop(self):
         self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
     def _feed_loop(self):
         cap = cv2.VideoCapture(self.video_path)
@@ -158,6 +172,140 @@ class VideoFeeder:
         print(f"VideoFeeder finished: {fed_count} frames fed in {elapsed:.1f}s")
 
 
+def _get_demo_video_dir():
+    return os.environ.get(
+        'DEMO_VIDEO_DIR',
+        os.path.join(os.path.dirname(__file__), 'demo_videos'),
+    )
+
+
+def _clear_queues():
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except Exception:
+            break
+    while not result_queue.empty():
+        try:
+            result_queue.get_nowait()
+        except Exception:
+            break
+
+
+def _stop_demo_feeder():
+    global _demo_video_feeder, _demo_active_video_id, _demo_active_video_path
+    global _demo_started_at, _demo_target_fps
+    with _demo_lock:
+        if _demo_video_feeder is not None:
+            print("Stopping active demo feeder...")
+            _demo_video_feeder.stop()
+            _demo_video_feeder = None
+            _demo_active_video_id = None
+            _demo_active_video_path = None
+            _demo_started_at = None
+            _demo_target_fps = None
+
+
+def _is_supported_video_file(path):
+    ext = os.path.splitext(path)[1].lower()
+    return ext in _DEMO_VIDEO_EXTENSIONS
+
+
+def _safe_demo_path(video_id):
+    demo_dir = os.path.abspath(_get_demo_video_dir())
+    if not video_id:
+        raise ValueError('video_id is required')
+
+    normalized_id = os.path.normpath(str(video_id).replace('\\', '/')).lstrip('/')
+    full_path = os.path.abspath(os.path.join(demo_dir, normalized_id))
+
+    if os.path.commonpath([demo_dir, full_path]) != demo_dir:
+        raise ValueError('Invalid video_id path')
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError(f'Video not found: {video_id}')
+    if not _is_supported_video_file(full_path):
+        raise ValueError('Unsupported video format')
+    return full_path
+
+
+def _collect_demo_video_files():
+    demo_dir = os.path.abspath(_get_demo_video_dir())
+    if not os.path.isdir(demo_dir):
+        return []
+    candidates = []
+    for root, _, files in os.walk(demo_dir):
+        for file_name in files:
+            full_path = os.path.join(root, file_name)
+            if _is_supported_video_file(full_path):
+                candidates.append(full_path)
+    candidates.sort()
+    return candidates
+
+
+def _build_thumbnail_data_url(video_path):
+    cache_key = (video_path, os.path.getmtime(video_path))
+    cached = _demo_thumbnail_cache.get(cache_key)
+    if cached:
+        return cached
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+
+    thumbnail = None
+    for _ in range(10):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if frame is None or frame.size == 0:
+            continue
+        h, w = frame.shape[:2]
+        if w > 320:
+            scale = 320.0 / float(w)
+            frame = cv2.resize(frame, (320, max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+        ok, jpeg_buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if ok:
+            b64 = base64.b64encode(jpeg_buf.tobytes()).decode('ascii')
+            thumbnail = f'data:image/jpeg;base64,{b64}'
+            break
+    cap.release()
+
+    if thumbnail:
+        _demo_thumbnail_cache[cache_key] = thumbnail
+    return thumbnail
+
+
+def _build_demo_catalog(force_refresh=False):
+    global _demo_catalog_cache
+    if _demo_catalog_cache is not None and not force_refresh:
+        return _demo_catalog_cache
+
+    demo_dir = os.path.abspath(_get_demo_video_dir())
+    videos = []
+    for video_path in _collect_demo_video_files():
+        rel_path = os.path.relpath(video_path, demo_dir).replace(os.sep, '/')
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        cap.release()
+        duration_sec = float(frame_count / fps) if fps > 0 else 0.0
+        videos.append({
+            'video_id': rel_path,
+            'name': os.path.splitext(os.path.basename(video_path))[0],
+            'filename': os.path.basename(video_path),
+            'mime_type': mimetypes.guess_type(video_path)[0] or 'video/mp4',
+            'thumbnail': _build_thumbnail_data_url(video_path),
+            'fps': round(float(fps), 3) if fps > 0 else None,
+            'duration_sec': round(duration_sec, 2) if duration_sec > 0 else None,
+            'width': width or None,
+            'height': height or None,
+        })
+    _demo_catalog_cache = videos
+    return videos
+
+
 # ------------------------------
 # Flask Routes
 # ------------------------------
@@ -173,17 +321,8 @@ def health():
 @app.route('/reset', methods=['POST'])
 def reset():
     """Soft reset: clear SLAM data, keep models loaded."""
-    # Clear queues
-    while not frame_queue.empty():
-        try:
-            frame_queue.get_nowait()
-        except Exception:
-            break
-    while not result_queue.empty():
-        try:
-            result_queue.get_nowait()
-        except Exception:
-            break
+    _stop_demo_feeder()
+    _clear_queues()
 
     slam_processor.soft_reset()
     # Schedule the broadcast on the ASGI event loop (this route runs in a thread)
@@ -197,6 +336,88 @@ def reset():
         'status': 'reset_complete',
         'message': 'SLAM data cleared, model still loaded',
     })
+
+
+@app.route('/api/demo/videos', methods=['GET'])
+def list_demo_videos():
+    """Return local demo videos with base64 thumbnails for selection UI."""
+    refresh = request.args.get('refresh', '').lower() in {'1', 'true', 'yes'}
+    videos = _build_demo_catalog(force_refresh=refresh)
+    return jsonify({
+        'videos': videos,
+        'demo_dir': _get_demo_video_dir(),
+        'active_video_id': _demo_active_video_id,
+    })
+
+
+@app.route('/api/demo/status', methods=['GET'])
+def demo_status():
+    """Return current demo feeder state for sender-side preview sync."""
+    return jsonify({
+        'running': _demo_video_feeder is not None,
+        'video_id': _demo_active_video_id,
+        'started_at': _demo_started_at,
+        'target_fps': _demo_target_fps,
+    })
+
+
+@app.route('/api/demo/video', methods=['GET'])
+def get_demo_video():
+    """Serve a selected demo video file for browser-side preview playback."""
+    video_id = request.args.get('video_id')
+    try:
+        video_path = _safe_demo_path(video_id)
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({'error': str(e)}), 400
+    return send_file(video_path, conditional=True)
+
+
+@app.route('/api/demo/start', methods=['POST'])
+def start_demo():
+    """Start feeding a selected local demo video into frame_queue."""
+    global _demo_video_feeder, _demo_active_video_id, _demo_active_video_path
+    global _demo_started_at, _demo_target_fps
+    data = request.get_json() or {}
+    video_id = data.get('video_id')
+    target_fps = float(data.get('fps', 10.0))
+
+    if slam_processor is None:
+        return jsonify({'error': 'SLAM processor not initialized'}), 503
+
+    try:
+        video_path = _safe_demo_path(video_id)
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({'error': str(e)}), 400
+
+    target_fps = max(0.5, min(30.0, target_fps))
+
+    with _demo_lock:
+        if _demo_video_feeder is not None:
+            _demo_video_feeder.stop()
+            _demo_video_feeder = None
+
+        _clear_queues()
+        slam_processor.soft_reset()
+
+        _demo_video_feeder = VideoFeeder(video_path, fast=False, target_fps=target_fps)
+        _demo_video_feeder.start()
+        _demo_active_video_id = video_id
+        _demo_active_video_path = video_path
+        _demo_started_at = time.time()
+        _demo_target_fps = target_fps
+
+    return jsonify({
+        'status': 'demo_started',
+        'video_id': video_id,
+        'fps': target_fps,
+    })
+
+
+@app.route('/api/demo/stop', methods=['POST'])
+def stop_demo():
+    """Stop active demo video feeder."""
+    _stop_demo_feeder()
+    return jsonify({'status': 'demo_stopped'})
 
 
 @app.route('/api/plan', methods=['POST'])
@@ -280,16 +501,8 @@ async def handle_disconnect(sid):
     if remaining == 0:
         client_connected.clear()
         slam_processor.stop()
-        while not frame_queue.empty():
-            try:
-                frame_queue.get_nowait()
-            except Exception:
-                break
-        while not result_queue.empty():
-            try:
-                result_queue.get_nowait()
-            except Exception:
-                break
+        _stop_demo_feeder()
+        _clear_queues()
 
 
 @sio.on('frame')
@@ -308,6 +521,7 @@ async def handle_frame(sid, data):
 async def handle_stop(sid, data=None):
     if slam_processor is None:
         return
+    _stop_demo_feeder()
     slam_processor.stop()
     try:
         loop = asyncio.get_event_loop()

@@ -87,6 +87,42 @@ export class SLAMConnection {
   }
 
   /**
+   * Start demo feeder for a selected local video on the server.
+   */
+  async startDemo(videoId: string, fps = 10): Promise<void> {
+    const response = await fetch(`${this.serverUrl}/api/demo/start`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ video_id: videoId, fps }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const message = body.error || `Failed to start demo (${response.status})`;
+      throw new Error(message);
+    }
+  }
+
+  /**
+   * Stop active demo feeder if one is running.
+   */
+  async stopDemo(): Promise<void> {
+    await fetch(`${this.serverUrl}/api/demo/stop`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * Ask backend to stop SLAM processing loop.
+   */
+  stopSLAM(): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('stop_slam');
+    }
+  }
+
+  /**
    * Check if currently connected
    */
   isConnected(): boolean {
