@@ -620,12 +620,18 @@ def start_server(
     print("=" * 60)
 
     import uvicorn
+    try:
+        import uvloop
+        loop = 'uvloop'
+    except ImportError:
+        loop = 'asyncio'
     uvicorn.run(
         asgi_application,
         host='0.0.0.0',
         port=port,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
+        loop=loop,
     )
 
 

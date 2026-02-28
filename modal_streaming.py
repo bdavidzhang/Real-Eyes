@@ -74,6 +74,7 @@ image = (
         "lz4",
         "ftfy",
         "regex",
+        "uvloop",
     )
     # Third-party repos
     .run_commands(
@@ -187,6 +188,12 @@ def download_models():
 @modal.asgi_app()
 def web():
     import sys
+    import asyncio
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass
     sys.path.insert(0, "/root/project")
 
     from server.app import asgi_application, initialize

@@ -34,7 +34,7 @@ export class SLAMConnection {
     this.setConnectionState('connecting');
 
     this.socket = io(this.serverUrl, {
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionAttempts: this.maxReconnectAttempts,
