@@ -1,6 +1,16 @@
-export function navigateToPlan(prompt: string): void {
-  const encoded = encodeURIComponent(prompt);
-  window.location.href = `/plan.html?prompt=${encoded}`;
+export function navigateToPlan(
+  prompt: string,
+  options?: { trackingSource?: 'live' | 'demo'; demoVideoId?: string }
+): void {
+  const url = new URL('/plan.html', window.location.origin);
+  url.searchParams.set('prompt', prompt);
+  if (options?.trackingSource === 'demo') {
+    url.searchParams.set('mode', 'demo');
+    if (options.demoVideoId) {
+      url.searchParams.set('video_id', options.demoVideoId);
+    }
+  }
+  window.location.href = `${url.pathname}${url.search}`;
 }
 
 export function navigateToDashboard(plan: {

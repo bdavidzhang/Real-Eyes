@@ -26,6 +26,75 @@ body {
   pointer-events: none;
 }
 
+.demo-quick-launch {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  padding: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: auto;
+}
+
+.demo-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.demo-row {
+  display: flex;
+  gap: 8px;
+}
+
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 155px;
+  overflow-y: auto;
+}
+
+.demo-thumb-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  transition: var(--transition);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.demo-thumb-btn.selected {
+  border-color: rgba(110, 168, 254, 0.85);
+  box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.5) inset;
+}
+
+.demo-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.demo-thumb-name {
+  margin-top: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.demo-start-btn {
+  width: 100%;
+  padding: 8px 12px;
+}
+
 .landing-overlay {
   position: fixed;
   top: 0;
