@@ -70,6 +70,10 @@ Set `abs_dir` in the eval shell scripts to your MASt3R-SLAM dataset download loc
 
 ## Cloud Deployment (Modal)
 
+Two Modal deployment scripts exist for different use cases:
+
+### modal_app.py — Batch/Offline SLAM
+
 ```bash
 # Run SLAM on a remote A100 GPU — uploads images, runs SLAM, downloads results
 modal run modal_app.py --image-folder ./office_loop --submap-size 16 --max-loops 1
@@ -78,14 +82,103 @@ modal run modal_app.py --image-folder ./office_loop --submap-size 16 --max-loops
 modal run modal_app.py::app.download_models
 ```
 
-`modal_app.py` mirrors `main.py` logic in headless mode. Results are saved to `./modal_results/`. The live Viser map URL is printed and opened in the browser once the container starts.
+**How it works:**
+1. **Local entrypoint** (`main()`): uploads local image folder to a Modal Volume (`vggt-slam-data`), calls `download_models.remote()` to ensure weights are cached in `vggt-slam-models` volume
+2. **Spawns `run_slam` non-blocking** on an A100-80GB GPU, then immediately waits on `modal.Queue` (`vggt-slam-url`) for the Viser tunnel URL — opens it in the browser the moment the server starts
+3. **`run_slam()`** on the remote container: initializes `Solver`, loads VGGT-1B, loops over images in submap batches (mirrors `main.py`), saves poses + dense point clouds to the data volume, then returns a summary dict
+4. **Local side** downloads `poses.txt` and dense log files from the volume to `./modal_results/`
+
+**Key Modal constructs:**
+- `modal.Volume` — `vggt-slam-models` persists model weights across runs; `vggt-slam-data` holds input images and results
+- `modal.Queue` — passes the live Viser URL from the remote container back to the local entrypoint
+- `modal.forward(8080)` — creates a public HTTPS tunnel to the Viser port inside the container
+
+### modal_streaming.py — Persistent Streaming Server
+
+```bash
+# Development (auto-reload on code changes)
+modal serve modal_streaming.py
+
+# Production deployment (stable URL, always-on)
+modal deploy modal_streaming.py
+
+# Pre-cache model weights
+modal run modal_streaming.py::app.download_models
+```
+
+**How it works:**
+1. `@modal.web_server(port=5000)` gives a stable `*.modal.run` URL; `min_containers=1` keeps the container warm
+2. On startup, `run_streaming_server()` calls `start_server()` in a daemon thread (the decorator expects the function to return after launching the server)
+3. The **frontend is built inside the Docker image** at build time (`npm install && npx vite build`) and served as static files — no separate Vite dev server needed in production
+4. Configuration via environment variables (`SUBMAP_SIZE`, `MIN_DISPARITY`, `CONF_THRESHOLD`, `VIS_STRIDE`) set in Modal dashboard or secrets
+5. Uses `modal.Secret` for `huggingface-secret` and `gemini-secret`
+
+**vs modal_app.py:** streaming is a persistent always-on server for live camera input; modal_app.py is a one-shot batch job for processing a folder of images.
 
 ## Streaming / Web Server Mode
 
-`server/streaming_slam.py` wraps the `Solver` for real-time frame-by-frame processing:
-- `StreamingSLAM` reads frames from `frame_queue`, runs SLAM, pushes JSON results to `result_queue`
-- Instantiated with `skip_viewer=True` (no Viser) — visualization streams to web frontend
-- `server/app.py` is the web server; `server/webserver/` contains the frontend
+The `server/` directory implements real-time browser-based SLAM streaming.
+
+### server/app.py — Flask + SocketIO Server
+
+**HTTP routes:**
+- `GET /health` — returns GPU status
+- `POST /reset` — soft reset (clears SLAM data, keeps models loaded); emits `slam_reset` to clients
+- `POST /api/plan` — LLM-powered tracking plan: sends a natural language prompt to Gemini (`gemini-1.5-flash`) and returns a structured JSON of objects to detect + waypoint/pathfinding justification; falls back to keyword extraction on error
+
+**SocketIO events (server → client):**
+- `slam_update` — streamed after each submap is processed; contains points, colors, camera poses, detections, beacons
+- `global_map` — full map state on demand
+- `slam_reset`, `slam_stopped`, `beacon_queued`, `detection_preview` — status/data events
+
+**SocketIO events (client → server):**
+- `frame` — send a base64-encoded JPEG frame; auto-starts SLAM on first frame
+- `stop_slam` — stop the processing loop
+- `set_detection_queries` — set active CLIP queries for object detection; immediately re-runs on existing submaps
+- `get_detection_preview` — return keyframe + SAM3 mask overlay for a specific submap/frame/query
+- `place_beacon` / `clear_beacons` — place a named marker at a frame's 3D camera position
+- `get_global_map` — request the full current map state
+
+**VideoFeeder** class: reads from a video file and pushes frames into `frame_queue` for offline testing. Supports FPS throttling (`--video-fps`) or fast-forward (`--fast`).
+
+**SSL:** local mode loads `server/webserver/server.cert` + `server.key` for HTTPS (required for phone camera access via WebRTC). Modal deployment skips SSL since the tunnel provides HTTPS.
+
+```bash
+# Run locally with live camera
+python -m server.app --port 5000
+
+# Run with a video file for testing
+python -m server.app --video /path/to/video.mp4 --video-fps 2 --submap-size 8
+```
+
+### server/streaming_slam.py — StreamingSLAM
+
+Wraps `Solver` for frame-by-frame streaming (no Viser, `skip_viewer=True`).
+
+**Initialization:** loads VGGT-1B + `ObjectDetector` (PE-Core CLIP + SAM3); sets CLIP model on `Solver` via `solver.set_clip_model()` so `run_predictions()` can compute per-frame semantic embeddings.
+
+**Processing loop** (`process_loop()`):
+1. Reads base64 JPEG frames from `frame_queue`
+2. Checks optical flow disparity — skips frames without enough motion
+3. Saves keyframes to a `tempfile.mkdtemp()` directory
+4. When `submap_size + 1` keyframes accumulate, calls `process_submap()`
+
+**Submap processing** (`process_submap()`):
+1. `solver.run_predictions()` → VGGT inference
+2. `solver.add_points()` → adds to map
+3. `solver.graph.optimize()` → GTSAM pose graph optimization
+4. `extract_stream_data()` → collects all points/colors/camera poses, recenters around scene mean, resolves pending beacons
+5. `_detect_after_submap_update()` → CLIP+SAM3 on latest submap if queries active
+6. Pushes result dict to `result_queue`; keeps last 1 frame as overlap window
+
+**Object detection** (cache-aware):
+- CLIP embeddings fetched via `submap.get_all_semantic_vectors()`
+- SAM3 segmentation runs only on frames with CLIP similarity above threshold
+- Cache key: `(submap_id, frame_idx, query)` — avoids reprocessing on query changes
+- 3D bboxes computed via `ObjectDetector.compute_3d_bbox()` using masked point cloud
+- `_dedup_and_store()` deduplicates overlapping 3D boxes across submaps
+
+**Soft reset** (`soft_reset()`): clears all SLAM state and temp files without reloading VGGT or CLIP models; re-attaches CLIP model to solver after `solver.reset()`.
 
 ## Architecture
 
