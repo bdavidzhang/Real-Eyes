@@ -1,0 +1,409 @@
+✓ Initialized. View run at https://modal.com/apps/galois77777/main/ap-SMPW5f23O5sYwTBmb32uz7
+✓ Created objects.
+├── 🔨 Created mount /Users/zhangbocheng/code/projects/VGGT-SLAM/modal_app.py
+├── 🔨 Created mount /Users/zhangbocheng/code/projects/VGGT-SLAM/vggt_slam
+├── 🔨 Created mount setup.py
+├── 🔨 Created function download_models.
+└── 🔨 Created function run_slam.
+Ensuring model weights are cached...
+VGGT-1B: already cached
+Uploading images from office_loop...
+  473 files to upload
+dino_salad: already cached
+DINOv2: already cached
+All model weights cached.
+  Upload complete.
+
+Starting SLAM on remote A100 (submap_size=16, max_loops=1)...
+Waiting for Viser server to start...
+Starting viser server on port 8080
+
+============================================================
+  LIVE MAP -> https://ta-01kjh5zpedz5b9ypx9cr4mtc86-8080.wo-ienflz56230yf7l8leleqljzt.w.modal.host
+============================================================
+
+╭──────────────── viser ────────────────╮
+│             ╷                         │
+│   HTTP      │ http://localhost:8080   │
+│   Websocket │ ws://localhost:8080     │
+│             ╵                         │
+╰───────────────────────────────────────╯
+Using cache found in /root/.cache/torch/hub/facebookresearch_dinov2_main
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/swiglu_ffn.py:51: UserWarning: xFormers is not available (SwiGLU)
+  warnings.warn("xFormers is not available (SwiGLU)")
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/attention.py:33: UserWarning: xFormers is not available (Attention)
+  warnings.warn("xFormers is not available (Attention)")
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/block.py:40: UserWarning: xFormers is not available (Block)
+  warnings.warn("xFormers is not available (Block)")
+(viser) Connection opened (0, 1 total), 7 persistent messages
+Loaded model from /root/.cache/torch/hub/checkpoints/dino_salad.ckpt Successfully!
+Loading VGGT model...
+(viser) Connection closed (0, 0 total)
+Loading images from /root/data/office_loop...
+Found 473 images
+
+[1A  0%|          | 0/473 [00:00<?, ?it/s]
+[1A  1%|          | 4/473 [00:00<00:13, 33.78it/s]
+[1A  2%|▏         | 9/473 [00:00<00:10, 42.44it/s]
+[1A  3%|▎         | 14/473 [00:00<00:12, 36.64it/s]
+[1A  4%|▍         | 18/473 [00:00<00:12, 37.66it/s]
+[1A  5%|▍         | 23/473 [00:00<00:11, 39.66it/s]
+[1A  6%|▌         | 28/473 [00:00<00:11, 37.16it/s]
+[1A  7%|▋         | 32/473 [00:00<00:12, 35.36it/s]
+[1A  8%|▊         | 36/473 [00:00<00:11, 36.57it/s]
+[1A  9%|▊         | 41/473 [00:01<00:11, 38.60it/s]
+[1A 10%|▉         | 45/473 [00:01<00:11, 38.54it/s]
+[1A 10%|█         | 49/473 [00:01<00:11, 37.21it/s]
+[1A 11%|█         | 53/473 [00:01<00:11, 37.40it/s]
+Processing submap 1 (17 frames)...
+Loaded and preprocessed 17 images in 0.52 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 0
+Created new submap in 0.75 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.88 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+Initial total error: 0.000000
+[1A 12%|█▏        | 57/473 [00:01<00:11, 37.73it/s]
+[1A 13%|█▎        | 61/473 [00:04<01:37,  4.24it/s]
+[1A 14%|█▎        | 64/473 [00:04<01:17,  5.31it/s]
+[1A 14%|█▍        | 68/473 [00:04<00:55,  7.28it/s]
+[1A 15%|█▌        | 72/473 [00:04<00:41,  9.58it/s]
+[1A 16%|█▋        | 77/473 [00:04<00:29, 13.41it/s]
+[1A 17%|█▋        | 81/473 [00:05<00:24, 16.19it/s]
+[1A 18%|█▊        | 85/473 [00:05<00:20, 18.55it/s]
+[1A 19%|█▉        | 89/473 [00:05<00:18, 21.18it/s]
+[1A 20%|█▉        | 93/473 [00:05<00:17, 21.36it/s]
+[1A 20%|██        | 96/473 [00:05<00:16, 22.72it/s]
+Processing submap 2 (17 frames)...
+Loaded and preprocessed 17 images in 0.55 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 17
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (0.9222222199558887, None)
+Initial total error: 0.000000
+[1A 21%|██        | 99/473 [00:05<00:16, 23.36it/s]
+[1A 22%|██▏       | 102/473 [00:07<01:14,  4.98it/s]
+[1A 22%|██▏       | 105/473 [00:07<00:56,  6.46it/s]
+[1A 23%|██▎       | 108/473 [00:07<00:44,  8.22it/s]
+[1A 23%|██▎       | 111/473 [00:07<00:36,  9.88it/s]
+[1A 24%|██▍       | 114/473 [00:08<00:29, 12.17it/s]
+[1A 25%|██▍       | 117/473 [00:08<00:26, 13.68it/s]
+[1A 26%|██▌       | 121/473 [00:08<00:21, 16.47it/s]
+[1A 26%|██▋       | 125/473 [00:08<00:17, 20.36it/s]
+[1A 27%|██▋       | 128/473 [00:08<00:16, 21.47it/s]
+[1A 28%|██▊       | 131/473 [00:08<00:14, 22.94it/s]
+[1A 29%|██▊       | 135/473 [00:08<00:14, 23.95it/s]
+Processing submap 3 (17 frames)...
+Loaded and preprocessed 17 images in 0.56 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 34
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+detected_loops [LoopMatch(similarity_score=0.9211510419845581, query_submap_id=34, query_submap_frame=12, detected_submap_id=0, detected_submap_frame=10)]
+21
+Average of top quarter attention values (all frames): 0.60811806
+CameraHead trunk_fn: B=1, S=2, C=2048
+Converting pose encoding to extrinsic and intrinsic matrices...
+Loop closure image match ratio too low, skipping loop closure
+scale factor (0.9999999751582623, None)
+Initial total error: 0.000000
+[1A 29%|██▉       | 139/473 [00:08<00:12, 26.63it/s]
+[1A 30%|███       | 142/473 [00:11<01:10,  4.72it/s]
+[1A 31%|███       | 145/473 [00:11<00:54,  6.07it/s]
+[1A 31%|███▏      | 148/473 [00:11<00:41,  7.77it/s]
+[1A 32%|███▏      | 151/473 [00:11<00:32,  9.82it/s]
+[1A 33%|███▎      | 154/473 [00:11<00:26, 11.95it/s]
+[1A 33%|███▎      | 158/473 [00:11<00:20, 15.49it/s]
+[1A 34%|███▍      | 161/473 [00:11<00:17, 17.43it/s]
+[1A 35%|███▍      | 165/473 [00:11<00:14, 20.79it/s]
+[1A 36%|███▌      | 169/473 [00:12<00:12, 23.61it/s]
+[1A 37%|███▋      | 173/473 [00:12<00:12, 24.34it/s]
+[1A 37%|███▋      | 176/473 [00:12<00:11, 25.02it/s]
+[1A 38%|███▊      | 179/473 [00:12<00:13, 22.61it/s]
+Processing submap 4 (17 frames)...
+Loaded and preprocessed 17 images in 0.57 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 51
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.39 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (1.1409395538431877, None)
+Initial total error: 0.000000
+[1A 39%|███▊      | 183/473 [00:12<00:12, 23.65it/s]
+[1A 39%|███▉      | 186/473 [00:14<00:58,  4.93it/s]
+[1A 40%|███▉      | 189/473 [00:14<00:45,  6.20it/s]
+[1A 41%|████      | 192/473 [00:14<00:35,  7.85it/s]
+[1A 41%|████      | 195/473 [00:14<00:29,  9.46it/s]
+[1A 42%|████▏     | 198/473 [00:15<00:23, 11.71it/s]
+[1A 42%|████▏     | 201/473 [00:15<00:20, 13.26it/s]
+[1A 43%|████▎     | 204/473 [00:15<00:17, 15.30it/s]
+[1A 44%|████▍     | 207/473 [00:15<00:16, 16.61it/s]
+[1A 45%|████▍     | 211/473 [00:15<00:12, 20.69it/s]
+[1A 45%|████▌     | 214/473 [00:15<00:11, 22.47it/s]
+[1A 46%|████▌     | 217/473 [00:15<00:11, 22.76it/s]
+Processing submap 5 (17 frames)...
+Loaded and preprocessed 17 images in 0.56 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 68
+Created new submap in 0.17 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (0.7948718096278273, None)
+Initial total error: 0.000000
+[1A 47%|████▋     | 220/473 [00:15<00:10, 24.32it/s]
+[1A 47%|████▋     | 223/473 [00:17<00:54,  4.59it/s]
+[1A 48%|████▊     | 226/473 [00:17<00:40,  6.09it/s]
+[1A 48%|████▊     | 229/473 [00:18<00:31,  7.84it/s]
+[1A 49%|████▉     | 232/473 [00:18<00:24,  9.69it/s]
+[1A 50%|████▉     | 235/473 [00:18<00:21, 11.32it/s]
+[1A 50%|█████     | 238/473 [00:18<00:17, 13.13it/s]
+[1A 51%|█████     | 241/473 [00:18<00:15, 14.63it/s]
+[1A 52%|█████▏    | 244/473 [00:18<00:15, 15.26it/s]
+Processing submap 6 (17 frames)...
+Loaded and preprocessed 17 images in 0.57 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 85
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (0.8963964133869294, None)
+Initial total error: 0.000000
+[1A 52%|█████▏    | 246/473 [00:19<00:15, 14.79it/s]
+[1A 52%|█████▏    | 248/473 [00:21<01:16,  2.93it/s]
+[1A 53%|█████▎    | 250/473 [00:21<01:00,  3.68it/s]
+[1A 53%|█████▎    | 253/473 [00:21<00:42,  5.18it/s]
+[1A 54%|█████▍    | 256/473 [00:21<00:30,  7.14it/s]
+[1A 55%|█████▍    | 259/473 [00:21<00:23,  9.10it/s]
+[1A 55%|█████▌    | 262/473 [00:22<00:18, 11.65it/s]
+[1A 56%|█████▌    | 266/473 [00:22<00:14, 14.60it/s]
+[1A 57%|█████▋    | 269/473 [00:22<00:12, 16.41it/s]
+[1A 58%|█████▊    | 272/473 [00:22<00:11, 17.31it/s]
+Processing submap 7 (17 frames)...
+Loaded and preprocessed 17 images in 0.56 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 102
+Created new submap in 0.17 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.41 seconds
+detected_loops [LoopMatch(similarity_score=0.9048017859458923, query_submap_id=102, query_submap_frame=8, detected_submap_id=17, detected_submap_frame=13)]
+21
+Average of top quarter attention values (all frames): 0.7210303
+CameraHead trunk_fn: B=1, S=2, C=2048
+Converting pose encoding to extrinsic and intrinsic matrices...
+Loop closure image match ratio too low, skipping loop closure
+scale factor (1.2535211406809732, None)
+Initial total error: 0.000000
+[1A 58%|█████▊    | 275/473 [00:22<00:10, 19.09it/s]
+[1A 59%|█████▉    | 278/473 [00:24<00:51,  3.82it/s]
+[1A 59%|█████▉    | 281/473 [00:25<00:37,  5.14it/s]
+[1A 60%|██████    | 284/473 [00:25<00:27,  6.77it/s]
+[1A 61%|██████    | 287/473 [00:25<00:21,  8.54it/s]
+[1A 62%|██████▏   | 291/473 [00:25<00:15, 11.68it/s]
+[1A 62%|██████▏   | 294/473 [00:25<00:13, 13.63it/s]
+[1A 63%|██████▎   | 297/473 [00:25<00:10, 16.08it/s]
+[1A 63%|██████▎   | 300/473 [00:25<00:09, 17.99it/s]
+[1A 64%|██████▍   | 303/473 [00:25<00:09, 18.74it/s]
+[1A 65%|██████▍   | 306/473 [00:25<00:08, 20.66it/s]
+[1A 65%|██████▌   | 309/473 [00:26<00:07, 21.80it/s]
+[1A 66%|██████▌   | 312/473 [00:26<00:07, 22.58it/s]
+Processing submap 8 (17 frames)...
+Loaded and preprocessed 17 images in 0.58 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 119
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (1.1974522020500735, None)
+Initial total error: 0.000000
+[1A 67%|██████▋   | 315/473 [00:26<00:06, 23.92it/s]
+[1A 67%|██████▋   | 318/473 [00:28<00:38,  3.99it/s]
+[1A 68%|██████▊   | 322/473 [00:28<00:26,  5.79it/s]
+[1A 69%|██████▉   | 326/473 [00:28<00:18,  7.94it/s]
+[1A 70%|██████▉   | 329/473 [00:28<00:14,  9.64it/s]
+[1A 70%|███████   | 332/473 [00:29<00:11, 11.85it/s]
+[1A 71%|███████   | 335/473 [00:29<00:10, 13.78it/s]
+[1A 71%|███████▏  | 338/473 [00:29<00:08, 15.09it/s]
+[1A 72%|███████▏  | 341/473 [00:29<00:07, 17.62it/s]
+[1A 73%|███████▎  | 344/473 [00:29<00:07, 18.30it/s]
+[1A 73%|███████▎  | 347/473 [00:29<00:06, 20.31it/s]
+[1A 74%|███████▍  | 351/473 [00:29<00:05, 21.70it/s]
+[1A 75%|███████▍  | 354/473 [00:29<00:05, 22.97it/s]
+Processing submap 9 (17 frames)...
+Loaded and preprocessed 17 images in 0.57 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 136
+Created new submap in 0.17 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.41 seconds
+detected_loops [LoopMatch(similarity_score=0.8882735371589661, query_submap_id=136, query_submap_frame=0, detected_submap_id=102, detected_submap_frame=16)]
+21
+Average of top quarter attention values (all frames): 0.647831
+CameraHead trunk_fn: B=1, S=2, C=2048
+Converting pose encoding to extrinsic and intrinsic matrices...
+Loop closure image match ratio too low, skipping loop closure
+scale factor (1.1249999846982144, None)
+Initial total error: 0.000000
+[1A 75%|███████▌  | 357/473 [00:30<00:04, 23.98it/s]
+[1A 76%|███████▌  | 360/473 [00:32<00:28,  4.00it/s]
+[1A 77%|███████▋  | 364/473 [00:32<00:18,  5.83it/s]
+[1A 78%|███████▊  | 367/473 [00:32<00:14,  7.42it/s]
+[1A 78%|███████▊  | 370/473 [00:32<00:11,  9.06it/s]
+[1A 79%|███████▉  | 373/473 [00:32<00:09, 11.05it/s]
+[1A 79%|███████▉  | 376/473 [00:33<00:07, 13.18it/s]
+[1A 80%|████████  | 379/473 [00:33<00:06, 14.67it/s]
+[1A 81%|████████  | 383/473 [00:33<00:04, 18.69it/s]
+[1A 82%|████████▏ | 386/473 [00:33<00:04, 18.58it/s]
+Processing submap 10 (17 frames)...
+Loaded and preprocessed 17 images in 0.58 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 153
+Created new submap in 0.17 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.42 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (0.9513513403779865, None)
+Initial total error: 0.000000
+[1A 82%|████████▏ | 389/473 [00:33<00:04, 20.40it/s]
+[1A 83%|████████▎ | 392/473 [00:35<00:20,  3.97it/s]
+[1A 84%|████████▎ | 395/473 [00:35<00:14,  5.30it/s]
+[1A 84%|████████▍ | 398/473 [00:36<00:11,  6.80it/s]
+[1A 85%|████████▍ | 401/473 [00:36<00:08,  8.75it/s]
+[1A 85%|████████▌ | 404/473 [00:36<00:06, 10.47it/s]
+[1A 86%|████████▌ | 407/473 [00:36<00:05, 12.73it/s]
+[1A 87%|████████▋ | 410/473 [00:36<00:04, 14.31it/s]
+[1A 87%|████████▋ | 413/473 [00:36<00:04, 14.96it/s]
+[1A 88%|████████▊ | 417/473 [00:36<00:03, 17.65it/s]
+Processing submap 11 (17 frames)...
+Loaded and preprocessed 17 images in 0.57 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 170
+Created new submap in 0.16 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.42 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (0.7192118288269889, None)
+Initial total error: 0.000000
+[1A 89%|████████▉ | 420/473 [00:37<00:02, 19.24it/s]
+[1A 89%|████████▉ | 423/473 [00:39<00:11,  4.21it/s]
+[1A 90%|█████████ | 426/473 [00:39<00:08,  5.56it/s]
+[1A 91%|█████████ | 429/473 [00:39<00:06,  7.03it/s]
+[1A 91%|█████████▏| 432/473 [00:39<00:04,  8.89it/s]
+[1A 92%|█████████▏| 435/473 [00:39<00:03, 11.01it/s]
+[1A 93%|█████████▎| 438/473 [00:39<00:02, 12.70it/s]
+[1A 93%|█████████▎| 441/473 [00:39<00:02, 13.96it/s]
+Processing submap 12 (17 frames)...
+Loaded and preprocessed 17 images in 0.59 seconds
+Preprocessed images shape: torch.Size([17, 3, 294, 518])
+Creating new submap with id 187
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=17, C=2048
+VGGT model inference took 0.40 seconds
+Converting pose encoding to extrinsic and intrinsic matrices...
+scale factor (1.113402040454476, None)
+Initial total error: 0.000000
+[1A 94%|█████████▍| 444/473 [00:40<00:01, 14.66it/s]
+[1A 94%|█████████▍| 446/473 [00:42<00:07,  3.56it/s]
+[1A 95%|█████████▍| 448/473 [00:42<00:05,  4.39it/s]
+[1A 95%|█████████▌| 450/473 [00:42<00:04,  5.37it/s]
+[1A 96%|█████████▌| 452/473 [00:42<00:03,  6.54it/s]
+[1A 96%|█████████▌| 455/473 [00:42<00:02,  8.77it/s]
+[1A 97%|█████████▋| 458/473 [00:42<00:01, 11.46it/s]
+[1A 97%|█████████▋| 461/473 [00:42<00:00, 13.73it/s]
+[1A 98%|█████████▊| 464/473 [00:43<00:00, 16.29it/s]
+[1A 99%|█████████▊| 467/473 [00:43<00:00, 18.89it/s]
+Processing submap 13 (16 frames)...
+Loaded and preprocessed 16 images in 0.53 seconds
+Preprocessed images shape: torch.Size([16, 3, 294, 518])
+Creating new submap with id 204
+Created new submap in 0.15 seconds
+21
+CameraHead trunk_fn: B=1, S=16, C=2048
+VGGT model inference took 0.39 seconds
+detected_loops [LoopMatch(similarity_score=0.6213627457618713, query_submap_id=204, query_submap_frame=14, detected_submap_id=0, detected_submap_frame=3)]
+21
+Average of top quarter attention values (all frames): 1.0055668
+CameraHead trunk_fn: B=1, S=2, C=2048
+Converting pose encoding to extrinsic and intrinsic matrices...
+['/root/data/office_loop/frame_0469.jpg', '/root/data/office_loop/frame_0018.jpg']
+scale factor (0.9306358416611853, None)
+Creating new Loop closure submap with id 220
+Loop closure conf (2, 294, 518)
+220 0 204 14
+scale factor (0.6892965273815757, None)
+scale factor (2.0744851804550577, None)
+Initial total error: 64.387351
+[1A 99%|█████████▉| 470/473 [00:43<00:00, 21.26it/s]
+[1A100%|██████████| 473/473 [00:52<00:00,  1.06it/s]
+[1A100%|██████████| 473/473 [00:52<00:00,  9.07it/s]
+[1.0, 10.0, 14.0, 18.0, 21.0, 24.0, 26.0, 29.0, 32.0, 35.0, 40.0, 44.0, 48.0, 52.0, 55.0, 58.0, 60.0]
+[60.0, 62.0, 64.0, 66.0, 69.0, 72.0, 75.0, 78.0, 80.0, 83.0, 85.0, 88.0, 91.0, 93.0, 96.0, 98.0, 101.0]
+[101.0, 104.0, 107.0, 109.0, 111.0, 113.0, 115.0, 117.0, 119.0, 121.0, 124.0, 127.0, 130.0, 133.0, 135.0, 138.0, 140.0]
+[140.0, 143.0, 146.0, 150.0, 153.0, 156.0, 160.0, 164.0, 167.0, 170.0, 172.0, 175.0, 177.0, 179.0, 181.0, 183.0, 185.0]
+[185.0, 187.0, 189.0, 191.0, 193.0, 195.0, 197.0, 199.0, 201.0, 203.0, 205.0, 207.0, 211.0, 214.0, 217.0, 220.0, 223.0]
+[223.0, 226.0, 229.0, 231.0, 232.0, 233.0, 235.0, 236.0, 238.0, 240.0, 241.0, 242.0, 243.0, 244.0, 245.0, 246.0, 247.0]
+[247.0, 248.0, 249.0, 250.0, 251.0, 253.0, 255.0, 257.0, 259.0, 262.0, 264.0, 266.0, 268.0, 270.0, 272.0, 274.0, 276.0]
+[276.0, 278.0, 281.0, 283.0, 285.0, 287.0, 290.0, 293.0, 296.0, 299.0, 301.0, 303.0, 305.0, 307.0, 310.0, 314.0, 318.0]
+[318.0, 322.0, 326.0, 329.0, 332.0, 334.0, 336.0, 338.0, 340.0, 342.0, 344.0, 346.0, 348.0, 351.0, 354.0, 356.0, 358.0]
+[358.0, 360.0, 363.0, 366.0, 368.0, 370.0, 372.0, 374.0, 377.0, 379.0, 382.0, 384.0, 386.0, 388.0, 390.0, 391.0, 392.0]
+[392.0, 394.0, 396.0, 397.0, 399.0, 402.0, 404.0, 406.0, 408.0, 410.0, 411.0, 412.0, 413.0, 415.0, 417.0, 419.0, 421.0]
+[421.0, 423.0, 425.0, 427.0, 429.0, 432.0, 434.0, 436.0, 438.0, 439.0, 440.0, 441.0, 442.0, 443.0, 444.0, 445.0, 446.0]
+[446.0, 447.0, 448.0, 449.0, 450.0, 451.0, 452.0, 453.0, 455.0, 457.0, 459.0, 461.0, 463.0, 466.0, 469.0, 472.0]
+{'frames_processed': 208, 'submaps': 13, 'loop_closures': 1, 'total_time_s': 52.18, 'avg_fps': 3.99, 'vggt_time_s': 13.01, 'backend_time_s': 0.53, 'results_path': 'results/office_loop/'}
+
+Pipeline complete:
+  Frames processed: 208
+  Submaps: 13
+  Loop closures: 1
+  Total time: 52.18s (3.99 FPS)
+  VGGT inference: 13.01s
+  Backend optimization: 0.53s
+
+Downloading results to modal_results/...
+  Downloaded poses.txt
+  Could not download dense logs: [Errno 2] No such file or directory: 'modal_results/poses_logs/406.0.npz'
+
+Done. Results saved to modal_results/
+Stopping app - local entrypoint completed.
+an error occurred during closing of asynchronous generator <async_generator object _forward at 0x2b2d8e5e15a0>
+asyncgen: <async_generator object _forward at 0x2b2d8e5e15a0>
+Traceback (most recent call last):
+  File "/pkg/modal/_tunnel.py", line 194, in _forward
+    yield Tunnel(response.host, response.port, response.unencrypted_host, response.unencrypted_port)
+GeneratorExit
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/pkg/modal/_tunnel.py", line 196, in _forward
+    await client.stub.TunnelStop(api_pb2.TunnelStopRequest(port=port))
+  File "/pkg/modal/_grpc_client.py", line 158, in direct
+    return await self.client._call_unary(self.wrapped_method, req, timeout=timeout, metadata=metadata)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pkg/modal/client.py", line 338, in _call_unary
+    return await self._call_safely(coro, grpclib_method.name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/pkg/modal/client.py", line 289, in _call_safely
+    raise ClientClosed(id(self))
+modal.exception.ClientClosed: 47469579263952
+✓ App completed. View run at https://modal.com/apps/galois77777/main/ap-SMPW5f23O5sYwTBmb32uz7
