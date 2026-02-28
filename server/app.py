@@ -309,6 +309,11 @@ async def handle_stop(sid, data=None):
     if slam_processor is None:
         return
     slam_processor.stop()
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(_gpu_executor, slam_processor.finalize_detection_state)
+    except Exception as e:
+        print(f"Final detection reconciliation error: {e}")
     await sio.emit('slam_stopped', {'status': 'stopped'}, to=sid)
 
 

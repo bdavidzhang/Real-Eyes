@@ -457,17 +457,11 @@ class StreamingSLAM:
         added = new_queries - old_queries
         if added and self.solver.map.get_num_submaps() > 0:
             t0 = time.time()
-            added_list = list(added)
-            for submap in self.solver.map.get_submaps():
-                try:
-                    new_keys = self._run_clip_sam_on_submap(submap, added_list)
-                    if new_keys:
-                        self._compute_bboxes_for_keys(new_keys)
-                except Exception as e:
-                    print(f"  Detection error on submap {submap.get_id()}: {e}")
+            added_list = sorted(added)
+            self._reconcile_detection_state(added_list, recompute_all_bboxes=True)
             print(f"New queries {added_list}: SAM on all submaps in {(time.time()-t0)*1000:.0f}ms")
-
-        self._dedup_and_store()
+        else:
+            self._dedup_and_store()
 
     def run_detection_progressive(self, queries):
         """Generator: run CLIP+SAM submap-by-submap, yield partial detections."""
@@ -489,8 +483,8 @@ class StreamingSLAM:
             for k in [k for k in self._sam_cache if k[2] in removed]:
                 del self._sam_cache[k]
 
-        added = list(new_queries - old_queries)
-        all_submaps = list(self.solver.map.get_submaps())
+        added = sorted(new_queries - old_queries)
+        all_submaps = self._sorted_submaps()
 
         if not added or not all_submaps:
             self._dedup_and_store()
@@ -499,14 +493,11 @@ class StreamingSLAM:
             return
 
         for i, submap in enumerate(all_submaps):
-            try:
-                new_keys = self._run_clip_sam_on_submap(submap, added)
-                if new_keys:
-                    self._compute_bboxes_for_keys(new_keys)
-            except Exception as e:
-                print(f"Detection error submap {submap.get_id()}: {e}")
-
-            self._dedup_and_store()
+            self._reconcile_detection_state(
+                added,
+                submaps=[submap],
+                recompute_all_bboxes=False,
+            )
             with self._detection_lock:
                 yield {
                     'detections': list(self.accumulated_detections),
@@ -623,6 +614,34 @@ class StreamingSLAM:
                     self.solver.graph, scene_center
                 )
 
+    def _sorted_submaps(self, submaps=None):
+        """Return submaps in deterministic key order for consistent reconciliation."""
+        if submaps is None:
+            items = list(self.solver.map.get_submaps())
+        else:
+            items = list(submaps)
+        return sorted(items, key=lambda s: s.get_id())
+
+    def _reconcile_detection_state(self, queries, submaps=None, recompute_all_bboxes=True):
+        """Apply CLIP+SAM for queries and refresh deduplicated detection state."""
+        if not queries:
+            self._dedup_and_store()
+            return []
+
+        new_mask_keys = []
+        for submap in self._sorted_submaps(submaps):
+            try:
+                new_mask_keys.extend(self._run_clip_sam_on_submap(submap, queries))
+            except Exception as e:
+                print(f"  Detection error on submap {submap.get_id()}: {e}")
+
+        if new_mask_keys:
+            self._compute_bboxes_for_keys(new_mask_keys)
+        if recompute_all_bboxes:
+            self._recompute_all_bboxes()
+        self._dedup_and_store()
+        return new_mask_keys
+
     def _recompute_all_bboxes(self):
         """Recompute ALL 3D bboxes from cached SAM masks (after graph optimization)."""
         od = self.object_detector
@@ -678,16 +697,16 @@ class StreamingSLAM:
             queries = list(self.active_queries)
         if not queries:
             return
+        self._reconcile_detection_state(queries, recompute_all_bboxes=True)
 
-        latest_submap = self.solver.map.get_latest_submap()
-        if latest_submap is not None:
-            try:
-                self._run_clip_sam_on_submap(latest_submap, queries)
-            except Exception as e:
-                print(f"  CLIP+SAM error on latest submap: {e}")
-
-        self._recompute_all_bboxes()
-        self._dedup_and_store()
+    def finalize_detection_state(self):
+        """Force a final all-submap reconciliation for active queries."""
+        with self._detection_lock:
+            queries = list(self.active_queries)
+        if not queries:
+            self._dedup_and_store()
+            return []
+        return self._reconcile_detection_state(queries, recompute_all_bboxes=True)
 
     # ------------------------------------------------------------------
     # Debug detection — full pipeline with rich per-frame diagnostics

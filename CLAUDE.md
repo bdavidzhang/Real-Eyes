@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 VGGT-SLAM 2.0 is a real-time dense feed-forward monocular SLAM system that uses the VGGT model for depth/pose prediction and optimizes on the SL(4) manifold via GTSAM. It supports loop closure detection, open-set 3D object detection, and interactive 3D visualization.
+k
 
 ## Setup & Installation
 
