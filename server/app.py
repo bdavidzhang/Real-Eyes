@@ -5,12 +5,18 @@ Handles:
   - WebSocket frame streaming from phone/browser
   - SLAM update broadcasting to viewer clients
   - Object detection queries (CLIP + SAM3)
-  - Beacon placement and resolution
+  - Session-scoped spatial agents with shared SLAM core
   - Video file testing mode
 """
 
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import concurrent.futures
+import json
 import os
-import ssl
 import queue
 import threading
 import time
@@ -18,6 +24,8 @@ import base64
 import argparse
 import asyncio
 import mimetypes
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -26,12 +34,12 @@ import json
 import re
 
 from flask import Flask, jsonify, request, send_file
+from asgiref.wsgi import WsgiToAsgi
 from flask_cors import CORS
 from PIL import Image
-
 import socketio as socketio_pkg
-from asgiref.wsgi import WsgiToAsgi
 
+from server.llm import OpenRouterClient
 from server.streaming_slam import StreamingSLAM
 from vggt_slam.object_detector import ObjectDetector
 
@@ -42,8 +50,8 @@ app = Flask(__name__)
 CORS(app)
 
 sio = socketio_pkg.AsyncServer(
-    async_mode='asgi',
-    cors_allowed_origins='*',
+    async_mode="asgi",
+    cors_allowed_origins="*",
     max_http_buffer_size=10_000_000,
     ping_timeout=120,
     ping_interval=25,
@@ -55,23 +63,20 @@ frame_queue = queue.Queue(maxsize=30)
 result_queue = queue.Queue(maxsize=10)
 
 # Global SLAM processor (initialized in initialize() or start_server())
-slam_processor = None
+slam_processor: Optional[StreamingSLAM] = None
 client_connected = threading.Event()
 
 # Track connected socket IDs so we only stop SLAM when the last client leaves
-_connected_sids: set = set()
+_connected_sids: set[str] = set()
 _sids_lock = threading.Lock()
 
 # Background streaming task handle — started once when the first client connects
-_stream_task = None
+_stream_task: Optional[asyncio.Task] = None
 
-# The running asyncio event loop, captured when the first async handler fires.
-# Used by sync Flask routes to schedule coroutines thread-safely.
-_event_loop: asyncio.AbstractEventLoop | None = None
+# Event loop for scheduling cross-thread async tasks
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
-# Single-threaded executor for blocking GPU ops (segment_all) so they don't
-# freeze the asyncio event loop while running SAM3 inference
-import concurrent.futures
+# Single-threaded executor for blocking GPU ops (segment_all / detection pipeline)
 _gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 # Demo mode (pre-recorded local videos)
@@ -84,6 +89,214 @@ _demo_started_at = None
 _demo_target_fps = None
 _demo_thumbnail_cache = {}
 _demo_catalog_cache = None
+# Agent executor (model calls for multiple sessions)
+_agent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+
+# Query update lock (lazy-initialized under async context)
+_query_update_lock: Optional[asyncio.Lock] = None
+
+# OpenRouter clients for HTTP APIs
+_plan_client: Optional[OpenRouterClient] = None
+_assistant_client: Optional[OpenRouterClient] = None
+
+# OpenRouter key cached during initialize()
+_openrouter_api_key: str = ""
+
+
+@dataclass
+class SessionState:
+    sid: str
+    manual_queries: set[str] = field(default_factory=set)
+    agent_queries: set[str] = field(default_factory=set)
+    agent: Any = None
+    connected_at: float = field(default_factory=time.time)
+
+
+_sessions: dict[str, SessionState] = {}
+_sessions_lock = threading.Lock()
+
+
+# ------------------------------
+# Helpers: Query/session management
+# ------------------------------
+def _ensure_query_lock() -> asyncio.Lock:
+    global _query_update_lock
+    if _query_update_lock is None:
+        _query_update_lock = asyncio.Lock()
+    return _query_update_lock
+
+
+def _normalize_query_list(queries: list[Any]) -> list[str]:
+    norm: list[str] = []
+    for item in queries:
+        q = str(item).strip().lower()
+        if q and q not in norm:
+            norm.append(q)
+    return norm
+
+
+def _session_active_queries(sid: str) -> list[str]:
+    with _sessions_lock:
+        state = _sessions.get(sid)
+        if state is None:
+            return []
+        merged = sorted(state.manual_queries | state.agent_queries)
+    return merged
+
+
+def _filter_detections_by_queries(detections: list[dict[str, Any]], queries: list[str]) -> list[dict[str, Any]]:
+    if not queries:
+        return []
+    query_set = set(queries)
+    return [
+        det for det in detections
+        if str(det.get("query", "")).strip().lower() in query_set
+    ]
+
+
+def _emit_to_sid_threadsafe(sid: str, event: str, data: dict[str, Any]):
+    try:
+        sio.start_background_task(sio.emit, event, data, to=sid)
+    except Exception as e:
+        print(f"Emit error sid={sid} event={event}: {e}")
+
+
+def _build_agent_state_payload(sid: str) -> dict[str, Any]:
+    with _sessions_lock:
+        state = _sessions.get(sid)
+
+    if state is None:
+        return {"enabled": False, "active_queries": []}
+
+    active_queries = sorted(state.manual_queries | state.agent_queries)
+
+    if state.agent is None:
+        return {
+            "enabled": False,
+            "scene_description": "",
+            "room_type": "unknown",
+            "missions": [],
+            "active_queries": active_queries,
+            "discovered_objects": [],
+            "current_goal": None,
+            "submaps_processed": 0,
+            "coverage_estimate": 0.0,
+            "health": "disabled",
+            "degraded_mode": False,
+        }
+
+    payload = state.agent.get_state()
+    payload["active_queries"] = active_queries
+    return payload
+
+
+def _collect_global_query_union() -> list[str]:
+    with _sessions_lock:
+        query_set: set[str] = set()
+        for state in _sessions.values():
+            query_set.update(state.manual_queries)
+            query_set.update(state.agent_queries)
+    return sorted(query_set)
+
+
+def _on_agent_queries_changed(sid: str, queries: list[str]):
+    """Called from agent threads; schedules async global query refresh."""
+    with _sessions_lock:
+        state = _sessions.get(sid)
+        if state is None:
+            return
+        state.agent_queries = set(_normalize_query_list(queries))
+
+    if _event_loop is None:
+        return
+
+    fut = asyncio.run_coroutine_threadsafe(
+        _refresh_global_detection_queries(trigger_sid=sid, emit_progress=False),
+        _event_loop,
+    )
+    try:
+        fut.result(timeout=0.01)
+    except Exception:
+        # Fire-and-forget: timeout is expected; coroutine continues on event loop.
+        pass
+
+
+def _create_session_agent(sid: str):
+    if not _openrouter_api_key:
+        return None
+
+    from server.spatial_agent import SpatialAgent
+
+    return SpatialAgent(
+        streaming_slam=slam_processor,
+        emit_fn=lambda event, data: _emit_to_sid_threadsafe(sid, event, data),
+        openrouter_api_key=_openrouter_api_key,
+        session_id=sid,
+        on_queries_changed=_on_agent_queries_changed,
+    )
+
+
+def _ensure_session(sid: str) -> SessionState:
+    with _sessions_lock:
+        state = _sessions.get(sid)
+        if state is not None:
+            return state
+
+        state = SessionState(sid=sid)
+        if slam_processor is not None:
+            state.agent = _create_session_agent(sid)
+        _sessions[sid] = state
+        return state
+
+
+async def _refresh_global_detection_queries(trigger_sid: Optional[str], emit_progress: bool):
+    """Recompute shared detection cache from session query union.
+
+    Compatibility behavior:
+      - Emits detection_partial only to the triggering session (when requested).
+      - Global detector still runs on union of all session queries.
+    """
+    if slam_processor is None:
+        return
+
+    lock = _ensure_query_lock()
+    async with lock:
+        global_queries = _collect_global_query_union()
+
+        loop = asyncio.get_event_loop()
+        partial_q: asyncio.Queue = asyncio.Queue()
+
+        def run_gen():
+            try:
+                for partial in slam_processor.run_detection_progressive(global_queries):
+                    loop.call_soon_threadsafe(partial_q.put_nowait, partial)
+            except Exception as e:
+                loop.call_soon_threadsafe(
+                    partial_q.put_nowait,
+                    {"detections": [], "is_final": True, "error": str(e)},
+                )
+
+        _gpu_executor.submit(run_gen)
+
+        while True:
+            partial = await partial_q.get()
+            if emit_progress and trigger_sid is not None:
+                active = _session_active_queries(trigger_sid)
+                filtered = _filter_detections_by_queries(partial.get("detections", []), active)
+                await sio.emit(
+                    "detection_partial",
+                    {
+                        "detections": filtered,
+                        "active_queries": active,
+                        "is_final": bool(partial.get("is_final", False)),
+                    },
+                    to=trigger_sid,
+                )
+            if partial.get("is_final", False):
+                break
+
+        if trigger_sid is not None:
+            await sio.emit("agent_state", _build_agent_state_payload(trigger_sid), to=trigger_sid)
 
 
 # ------------------------------
@@ -102,8 +315,10 @@ class VideoFeeder:
     def start(self):
         self._thread = threading.Thread(target=self._feed_loop, daemon=True)
         self._thread.start()
-        print(f"VideoFeeder started: {self.video_path} "
-              f"(target_fps={self.target_fps}, fast={self.fast})")
+        print(
+            f"VideoFeeder started: {self.video_path} "
+            f"(target_fps={self.target_fps}, fast={self.fast})"
+        )
 
     def stop(self):
         self._stop_event.set()
@@ -125,8 +340,10 @@ class VideoFeeder:
 
         frames_to_feed = total_frames // skip
         print(f"Video: {total_frames} frames @ {video_fps:.1f} FPS")
-        print(f"  Feeding every {skip} frame(s) -> ~{effective_fps:.1f} effective FPS "
-              f"(~{frames_to_feed} frames, delay={delay*1000:.0f}ms)")
+        print(
+            f"  Feeding every {skip} frame(s) -> ~{effective_fps:.1f} effective FPS "
+            f"(~{frames_to_feed} frames, delay={delay * 1000:.0f}ms)"
+        )
 
         raw_idx = 0
         fed_count = 0
@@ -141,11 +358,11 @@ class VideoFeeder:
             if (raw_idx - 1) % skip != 0:
                 continue
 
-            ok, jpeg_buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            ok, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
                 continue
-            b64 = base64.b64encode(jpeg_buf.tobytes()).decode('ascii')
-            data = {'image': b64, 'timestamp': time.time()}
+            b64 = base64.b64encode(jpeg_buf.tobytes()).decode("ascii")
+            data = {"image": b64, "timestamp": time.time()}
 
             try:
                 frame_queue.put(data, timeout=10)
@@ -153,11 +370,9 @@ class VideoFeeder:
                 print(f"frame_queue full, dropping frame {fed_count}")
                 continue
 
-            # Auto-start SLAM on first frame
-            if fed_count == 0 and slam_processor is not None:
-                if not slam_processor.is_running:
-                    print("Auto-starting SLAM processing (video mode)...")
-                    slam_processor.start()
+            if fed_count == 0 and slam_processor is not None and not slam_processor.is_running:
+                print("Auto-starting SLAM processing (video mode)...")
+                slam_processor.start()
 
             fed_count += 1
             if fed_count % 50 == 0:
@@ -309,33 +524,51 @@ def _build_demo_catalog(force_refresh=False):
 # ------------------------------
 # Flask Routes
 # ------------------------------
-@app.route('/health')
+@app.route("/health")
 def health():
-    return jsonify({
-        'status': 'ok',
-        'gpu': torch.cuda.is_available(),
-        'gpu_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none',
-    })
+    return jsonify(
+        {
+            "status": "ok",
+            "gpu": torch.cuda.is_available(),
+            "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none",
+        }
+    )
 
 
-@app.route('/reset', methods=['POST'])
+@app.route("/reset", methods=["POST"])
 def reset():
     """Soft reset: clear SLAM data, keep models loaded."""
     _stop_demo_feeder()
     _clear_queues()
+    if slam_processor is None:
+        return jsonify({"status": "no_processor"}), 503
+
+    while not frame_queue.empty():
+        try:
+            frame_queue.get_nowait()
+        except Exception:
+            break
+
+    while not result_queue.empty():
+        try:
+            result_queue.get_nowait()
+        except Exception:
+            break
+
+    with _sessions_lock:
+        for state in _sessions.values():
+            state.manual_queries.clear()
+            state.agent_queries.clear()
+            if state.agent is not None:
+                state.agent.reset()
 
     slam_processor.soft_reset()
-    # Schedule the broadcast on the ASGI event loop (this route runs in a thread)
-    if _event_loop is not None:
-        asyncio.run_coroutine_threadsafe(
-            sio.emit('slam_reset', {'status': 'reset'}),
-            _event_loop,
-        )
+    slam_processor.set_detection_queries([])
 
-    return jsonify({
-        'status': 'reset_complete',
-        'message': 'SLAM data cleared, model still loaded',
-    })
+    if _event_loop is not None:
+        asyncio.run_coroutine_threadsafe(sio.emit("slam_reset", {"status": "reset"}), _event_loop)
+
+    return jsonify({"status": "reset_complete", "message": "SLAM and session state cleared"})
 
 
 @app.route('/api/demo/videos', methods=['GET'])
@@ -421,133 +654,279 @@ def stop_demo():
 # Lazy-initialized OpenRouter client for the /api/plan route
 _plan_client = None
 
-def _get_plan_client():
+def _get_plan_client() -> OpenRouterClient:
     global _plan_client
     if _plan_client is None:
-        from openai import OpenAI
-        api_key = os.environ.get('OPENROUTER_API_KEY', '')
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
         if not api_key:
-            raise RuntimeError('OPENROUTER_API_KEY not set')
-        _plan_client = OpenAI(
-            base_url='https://openrouter.ai/api/v1',
+            raise RuntimeError("OPENROUTER_API_KEY not set")
+
+        _plan_client = OpenRouterClient(
             api_key=api_key,
+            primary_model=os.environ.get(
+                "PLAN_MODEL", "anthropic/claude-3.5-haiku-20241022"
+            ),
+            fallback_models=[
+                os.environ.get("PLAN_FALLBACK_MODEL", "openai/gpt-4o-mini")
+            ],
             timeout=15.0,
+            app_name="Real-Eyes Plan API",
+            max_retries=2,
         )
     return _plan_client
 
 
-@app.route('/api/plan', methods=['POST'])
+@app.route("/api/plan", methods=["POST"])
 def generate_plan():
     """Generate a tracking plan from a natural language prompt via OpenRouter."""
     data = request.get_json() or {}
-    prompt = data.get('prompt', '')
+    prompt = str(data.get("prompt", "")).strip()
 
     try:
         client = _get_plan_client()
-        response = client.chat.completions.create(
-            model='anthropic/claude-3.5-haiku-20241022',
-            messages=[
-                {
-                    'role': 'system',
-                    'content': (
-                        'You extract concrete, visible physical objects from a user scenario '
-                        'for 3D spatial tracking. Always respond with valid JSON only.'
-                    ),
-                },
-                {
-                    'role': 'user',
-                    'content': (
-                        f'Given this scenario: "{prompt}"\n'
-                        'Return JSON with this exact format:\n'
-                        '{"objects": ["obj1", "obj2"], '
-                        '"waypoints_justification": "1-2 sentences", '
-                        '"pathfinding_justification": "1-2 sentences"}\n'
-                        'Objects should be concrete, visible, physical items trackable in 3D space.'
-                    ),
-                },
-            ],
-            max_tokens=256,
-            temperature=0.3,
-            response_format={'type': 'json_object'},
+        system_prompt = (
+            "You extract concrete visible physical objects from user scenarios for "
+            "3D spatial tracking. Output strict JSON only."
         )
-        content = response.choices[0].message.content
-        result = json.loads(content)
-        return jsonify({
-            'objects': result.get('objects', []),
-            'waypoints': {
-                'enabled': True,
-                'justification': result.get('waypoints_justification', 'Waypoints mark key locations.'),
-            },
-            'pathfinding': {
-                'enabled': True,
-                'justification': result.get('pathfinding_justification', 'Pathfinding visualizes your traversed route.'),
-            },
-        })
+        user_prompt = (
+            f'Given this scenario: "{prompt}"\n'
+            "Return JSON with exact keys: "
+            '{"objects": ["obj1", "obj2"], '
+            '"waypoints_justification": "1-2 sentences", '
+            '"pathfinding_justification": "1-2 sentences"}. '
+            "Objects must be concrete physical items trackable in 3D space."
+        )
+        result, _ = client.chat_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.2,
+            max_tokens=256,
+        )
+
+        return jsonify(
+            {
+                "objects": result.get("objects", []),
+                "waypoints": {
+                    "enabled": True,
+                    "justification": result.get(
+                        "waypoints_justification", "Waypoints mark key locations."
+                    ),
+                },
+                "pathfinding": {
+                    "enabled": True,
+                    "justification": result.get(
+                        "pathfinding_justification",
+                        "Pathfinding visualizes your traversed route.",
+                    ),
+                },
+            }
+        )
     except Exception as e:
-        print(f'Plan generation error: {e}; falling back to keyword extraction')
+        print(f"Plan generation error: {e}; falling back to keyword extraction")
         stopwords = {
-            'i', 'a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'and',
-            'or', 'my', 'me', 'we', 'is', 'are', 'was', 'want', 'need',
-            'track', 'find', 'locate', 'using', 'with', 'this', 'that',
+            "i",
+            "a",
+            "an",
+            "the",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "and",
+            "or",
+            "my",
+            "me",
+            "we",
+            "is",
+            "are",
+            "was",
+            "want",
+            "need",
+            "track",
+            "find",
+            "locate",
+            "using",
+            "with",
+            "this",
+            "that",
         }
-        words = [w.strip('.,!?') for w in prompt.lower().split()]
+        words = [w.strip(".,!?") for w in prompt.lower().split()]
         objects = list(dict.fromkeys([w for w in words if w and w not in stopwords]))[:5]
-        return jsonify({
-            'objects': objects or ['object'],
-            'waypoints': {'enabled': True, 'justification': 'Waypoints help mark key locations.'},
-            'pathfinding': {'enabled': True, 'justification': 'Pathfinding visualizes your traversed route.'},
-        })
+        return jsonify(
+            {
+                "objects": objects or ["object"],
+                "waypoints": {
+                    "enabled": True,
+                    "justification": "Waypoints help mark key locations.",
+                },
+                "pathfinding": {
+                    "enabled": True,
+                    "justification": "Pathfinding visualizes your traversed route.",
+                },
+            }
+        )
+
+
+def _get_assistant_client() -> OpenRouterClient:
+    global _assistant_client
+    if _assistant_client is None:
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY not set")
+
+        _assistant_client = OpenRouterClient(
+            api_key=api_key,
+            primary_model=os.environ.get(
+                "ASSISTANT_MODEL", "anthropic/claude-3.5-haiku-20241022"
+            ),
+            fallback_models=[
+                os.environ.get("ASSISTANT_FALLBACK_MODEL", "openai/gpt-4o-mini")
+            ],
+            timeout=15.0,
+            app_name="Real-Eyes Summary Assistant",
+            max_retries=2,
+        )
+    return _assistant_client
+
+
+@app.route("/api/assistant/chat", methods=["POST"])
+def assistant_chat():
+    """Server-side chat endpoint for summary/dashboard assistants."""
+    data = request.get_json() or {}
+    user_message = str(data.get("message", "")).strip()
+    if not user_message:
+        return jsonify({"error": "message is required"}), 400
+
+    history = data.get("history")
+    if not isinstance(history, list):
+        history = []
+
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    snapshot = context.get("snapshot") if isinstance(context, dict) else None
+    detections = context.get("detections") if isinstance(context, dict) else None
+    images_b64 = context.get("images_b64") if isinstance(context, dict) else None
+
+    context_parts: list[str] = []
+    if isinstance(snapshot, dict):
+        n_points = snapshot.get("n_points", 0)
+        n_cameras = snapshot.get("n_cameras", 0)
+        num_submaps = snapshot.get("num_submaps", 0)
+        context_parts.append(
+            f"Scan stats: {n_points} points, {n_cameras} camera frames, {num_submaps} submaps."
+        )
+
+    if isinstance(detections, list) and detections:
+        names = []
+        for det in detections:
+            if not isinstance(det, dict):
+                continue
+            q = str(det.get("query", "")).strip().lower()
+            if q and q not in names:
+                names.append(q)
+        if names:
+            context_parts.append("Detected objects: " + ", ".join(names[:20]))
+
+    system_prompt = (
+        "You are a helpful assistant for a live 3D SLAM mapping system. "
+        "Use the provided scan context, be precise, and stay concise (2-5 sentences)."
+    )
+    user_prompt = user_message + "\n\nContext:\n" + "\n".join(context_parts)
+
+    try:
+        client = _get_assistant_client()
+        response = client.chat_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history[-10:],
+            images_b64=images_b64 if isinstance(images_b64, list) else None,
+            temperature=0.4,
+            max_tokens=512,
+        )
+        return jsonify(
+            {
+                "reply": response.content,
+                "model": response.model,
+                "degraded": response.degraded,
+            }
+        )
+    except Exception as e:
+        print(f"Assistant chat error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ------------------------------
 # SocketIO Events
 # ------------------------------
-@sio.on('connect')
+@sio.on("connect")
 async def handle_connect(sid, environ, auth):
     global _stream_task, _event_loop
     if slam_processor is None:
         return
-    # Capture the running event loop so sync Flask routes can schedule coroutines
+
     _event_loop = asyncio.get_event_loop()
+
     with _sids_lock:
         _connected_sids.add(sid)
+
+    _ensure_session(sid)
+
     print(f"Client connected ({len(_connected_sids)} total)")
     client_connected.set()
-    # Start the result-streaming loop once (it runs forever; survives reconnects)
+
     if _stream_task is None or _stream_task.done():
         _stream_task = asyncio.ensure_future(stream_results())
-    await sio.emit('connected', {'status': 'ready'}, to=sid)
+
+    await sio.emit("connected", {"status": "ready"}, to=sid)
+    await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
 
 
-@sio.on('disconnect')
+@sio.on("disconnect")
 async def handle_disconnect(sid):
     if slam_processor is None:
         return
+
     with _sids_lock:
         _connected_sids.discard(sid)
         remaining = len(_connected_sids)
+
+    with _sessions_lock:
+        _sessions.pop(sid, None)
+
     print(f"Client disconnected ({remaining} remaining)")
-    # Only stop SLAM and clear queues when the LAST client leaves
+
+    await _refresh_global_detection_queries(trigger_sid=None, emit_progress=False)
+
     if remaining == 0:
         client_connected.clear()
         slam_processor.stop()
         _stop_demo_feeder()
         _clear_queues()
 
+        while not frame_queue.empty():
+            try:
+                frame_queue.get_nowait()
+            except Exception:
+                break
+        while not result_queue.empty():
+            try:
+                result_queue.get_nowait()
+            except Exception:
+                break
 
-@sio.on('frame')
+
+@sio.on("frame")
 async def handle_frame(sid, data):
     if slam_processor is None:
         return
     if not frame_queue.full():
         frame_queue.put(data)
-    # Auto-start SLAM on first frame
     if not slam_processor.is_running:
         print("Auto-starting SLAM processing...")
         slam_processor.start()
 
 
-@sio.on('stop_slam')
+@sio.on("stop_slam")
 async def handle_stop(sid, data=None):
     if slam_processor is None:
         return
@@ -561,54 +940,38 @@ async def handle_stop(sid, data=None):
     await sio.emit('slam_stopped', {'status': 'stopped'}, to=sid)
 
 
-@sio.on('set_detection_queries')
+@sio.on("set_detection_queries")
 async def handle_set_detection_queries(sid, data):
     if slam_processor is None:
         return
-    """Set active object detection queries — streams partial results progressively."""
-    queries = data.get('queries', [])
-    print(f"Detection queries received: {queries}")
 
-    loop = asyncio.get_event_loop()
-    partial_q: asyncio.Queue = asyncio.Queue()
+    queries = _normalize_query_list(data.get("queries", []))
+    state = _ensure_session(sid)
 
-    def run_gen():
-        try:
-            for partial in slam_processor.run_detection_progressive(queries):
-                loop.call_soon_threadsafe(partial_q.put_nowait, partial)
-        except Exception as e:
-            print(f"Progressive detection error: {e}")
-            loop.call_soon_threadsafe(
-                partial_q.put_nowait,
-                {'detections': [], 'is_final': True, 'error': str(e)},
-            )
+    with _sessions_lock:
+        state.manual_queries = set(queries)
 
-    _gpu_executor.submit(run_gen)
-
-    while True:
-        partial = await partial_q.get()
-        await sio.emit('detection_partial', {
-            'detections': partial['detections'],
-            'active_queries': list(slam_processor.active_queries),
-            'is_final': partial['is_final'],
-        }, to=sid)
-        if partial['is_final']:
-            break
+    print(f"Detection queries sid={sid}: {queries}")
+    await _refresh_global_detection_queries(trigger_sid=sid, emit_progress=True)
 
 
-@sio.on('get_detection_preview')
+@sio.on("get_detection_preview")
 async def handle_get_detection_preview(sid, data):
     if slam_processor is None:
         return
-    """Generate and return keyframe + SAM3 mask preview."""
-    submap_id = data.get('submap_id')
-    frame_idx = data.get('frame_idx')
-    query = data.get('query', '')
+
+    submap_id = data.get("submap_id")
+    frame_idx = data.get("frame_idx")
+    query = data.get("query", "")
 
     try:
         submap = slam_processor.solver.map.get_submap(submap_id)
         if submap is None:
-            await sio.emit('detection_preview', {'error': f'Submap {submap_id} not found'}, to=sid)
+            await sio.emit(
+                "detection_preview",
+                {"error": f"Submap {submap_id} not found"},
+                to=sid,
+            )
             return
 
         frame_tensor = submap.get_frame_at_index(frame_idx)
@@ -619,8 +982,6 @@ async def handle_get_detection_preview(sid, data):
 
         mask_image = None
         if query:
-            # Run SAM3 inference in a thread-pool executor so it doesn't
-            # freeze the asyncio event loop (which would block slam_update too)
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 _gpu_executor,
@@ -632,59 +993,57 @@ async def handle_get_detection_preview(sid, data):
                 best_mask, _, _ = max(results, key=lambda r: r[2])
                 mask_image = ObjectDetector.mask_overlay_to_base64(frame_np, best_mask)
 
-        await sio.emit('detection_preview', {
-            'query': query,
-            'submap_id': submap_id,
-            'frame_idx': frame_idx,
-            'keyframe_image': keyframe_image,
-            'mask_image': mask_image,
-        }, to=sid)
+        await sio.emit(
+            "detection_preview",
+            {
+                "query": query,
+                "submap_id": submap_id,
+                "frame_idx": frame_idx,
+                "keyframe_image": keyframe_image,
+                "mask_image": mask_image,
+            },
+            to=sid,
+        )
 
     except Exception as e:
         print(f"Error generating preview: {e}")
-        import traceback
-        traceback.print_exc()
-        await sio.emit('detection_preview', {'error': str(e)}, to=sid)
+        await sio.emit("detection_preview", {"error": str(e)}, to=sid)
 
 
-@sio.on('place_beacon')
+@sio.on("place_beacon")
 async def handle_place_beacon(sid, data):
     if slam_processor is None:
         return
-    """Queue a beacon request."""
-    beacon_id = data.get('beacon_id')
-    frame_number = data.get('frame_number', 0)
-    slam_processor.pending_beacons.append({
-        'beacon_id': beacon_id,
-        'frame_number': frame_number,
-    })
+
+    beacon_id = data.get("beacon_id")
+    frame_number = data.get("frame_number", 0)
+    slam_processor.pending_beacons.append({"beacon_id": beacon_id, "frame_number": frame_number})
     print(f"Beacon {beacon_id} queued at frame {frame_number}")
-    await sio.emit('beacon_queued', {'beacon_id': beacon_id}, to=sid)
+    await sio.emit("beacon_queued", {"beacon_id": beacon_id}, to=sid)
 
 
-@sio.on('clear_beacons')
+@sio.on("clear_beacons")
 async def handle_clear_beacons(sid, data=None):
     if slam_processor is None:
         return
-    """Clear all pending and resolved beacons."""
     slam_processor.pending_beacons.clear()
     slam_processor.resolved_beacons.clear()
     print("All beacons cleared")
 
 
-@sio.on('debug_detect')
+@sio.on("debug_detect")
 async def handle_debug_detect(sid, data):
     if slam_processor is None:
-        await sio.emit('debug_detect_results', {'error': 'SLAM not initialized'}, to=sid)
+        await sio.emit("debug_detect_results", {"error": "SLAM not initialized"}, to=sid)
         return
-    """Run full detection pipeline and stream back rich per-frame diagnostics."""
-    queries = data.get('queries', [])
-    clip_thresholds = data.get('clip_thresholds', {})
-    sam_thresholds = data.get('sam_thresholds', {})
-    top_k = data.get('top_k', None)
+
+    queries = data.get("queries", [])
+    clip_thresholds = data.get("clip_thresholds", {})
+    sam_thresholds = data.get("sam_thresholds", {})
+    top_k = data.get("top_k", None)
 
     if not queries:
-        await sio.emit('debug_detect_results', {'error': 'No queries provided'}, to=sid)
+        await sio.emit("debug_detect_results", {"error": "No queries provided"}, to=sid)
         return
 
     print(f"Debug detect: {queries} (CLIP={clip_thresholds}, SAM={sam_thresholds}, top_k={top_k})")
@@ -692,101 +1051,137 @@ async def handle_debug_detect(sid, data):
     try:
         result = await loop.run_in_executor(
             _gpu_executor,
-            lambda: slam_processor.debug_detect_full(
-                queries, clip_thresholds, sam_thresholds, top_k
-            )
+            lambda: slam_processor.debug_detect_full(queries, clip_thresholds, sam_thresholds, top_k),
         )
-        await sio.emit('debug_detect_results', result, to=sid)
+        await sio.emit("debug_detect_results", result, to=sid)
     except Exception as e:
         print(f"Debug detect error: {e}")
-        import traceback
-        traceback.print_exc()
-        await sio.emit('debug_detect_results', {'error': str(e)}, to=sid)
+        await sio.emit("debug_detect_results", {"error": str(e)}, to=sid)
 
 
-@sio.on('get_global_map')
+@sio.on("get_global_map")
 async def handle_get_global_map(sid, data=None):
     if slam_processor is None:
         return
-    """Return the current global map state."""
+
     print("Client requested global map")
     try:
         if slam_processor.solver.map.get_num_submaps() > 0:
-            # Use cached full payload if available, otherwise re-extract
-            if slam_processor._last_stream_data and slam_processor._last_stream_data.get('type') == 'full':
+            if slam_processor._last_stream_data and slam_processor._last_stream_data.get("type") == "full":
                 stream_data = dict(slam_processor._last_stream_data)
             else:
                 stream_data = slam_processor.extract_stream_data_full()
-            with slam_processor._detection_lock:
-                stream_data['detections'] = list(slam_processor.accumulated_detections)
-                stream_data['active_queries'] = list(slam_processor.active_queries)
 
-            if stream_data and stream_data['n_points'] > 0:
-                print(f"Sending global map: {stream_data['n_points']} points, "
-                      f"{stream_data['n_cameras']} cameras")
-                await sio.emit('global_map', stream_data, to=sid)
+            with slam_processor._detection_lock:
+                all_detections = list(slam_processor.accumulated_detections)
+
+            active_queries = _session_active_queries(sid)
+            stream_data["active_queries"] = active_queries
+            stream_data["detections"] = _filter_detections_by_queries(all_detections, active_queries)
+
+            if stream_data and stream_data.get("n_points", 0) > 0:
+                await sio.emit("global_map", stream_data, to=sid)
             else:
-                await sio.emit('global_map', slam_processor._empty_data(), to=sid)
+                empty = slam_processor._empty_data()
+                empty["active_queries"] = active_queries
+                empty["detections"] = []
+                await sio.emit("global_map", empty, to=sid)
         else:
-            await sio.emit('global_map', slam_processor._empty_data(), to=sid)
+            empty = slam_processor._empty_data()
+            empty["active_queries"] = _session_active_queries(sid)
+            empty["detections"] = []
+            await sio.emit("global_map", empty, to=sid)
     except Exception as e:
         print(f"Error fetching global map: {e}")
-        import traceback
-        traceback.print_exc()
 
 
 # ------------------------------
 # Spatial Agent SocketIO Events
 # ------------------------------
-@sio.on('agent_chat')
+@sio.on("agent_chat")
 async def handle_agent_chat(sid, data):
-    if slam_processor is None or slam_processor.spatial_agent is None:
+    state = _ensure_session(sid)
+    if state.agent is None:
         return
-    message = data.get('message', '')
+
+    message = str(data.get("message", "")).strip()
     if not message:
         return
+
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
-        None,
-        slam_processor.spatial_agent.handle_user_message,
-        message,
-    )
+    await loop.run_in_executor(_agent_executor, state.agent.handle_user_message, message)
 
 
-@sio.on('agent_set_goal')
+@sio.on("agent_set_goal")
 async def handle_agent_set_goal(sid, data):
-    if slam_processor is None or slam_processor.spatial_agent is None:
+    state = _ensure_session(sid)
+    if state.agent is None:
         return
-    goal = data.get('goal', '')
+
+    goal = str(data.get("goal", "")).strip()
     if goal:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            slam_processor.spatial_agent.set_goal,
-            goal,
-        )
+        await loop.run_in_executor(_agent_executor, state.agent.set_goal, goal)
 
 
-@sio.on('agent_toggle')
+@sio.on("agent_toggle")
 async def handle_agent_toggle(sid, data):
-    if slam_processor is None or slam_processor.spatial_agent is None:
+    state = _ensure_session(sid)
+    if state.agent is None:
+        await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
         return
-    enabled = data.get('enabled', True)
-    slam_processor.spatial_agent.enabled = enabled
-    await sio.emit('agent_state', slam_processor.spatial_agent.get_state(), to=sid)
+
+    enabled = bool(data.get("enabled", True))
+    state.agent.enabled = enabled
+    await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
 
 
-@sio.on('get_agent_state')
+@sio.on("get_agent_state")
 async def handle_get_agent_state(sid, data=None):
-    if slam_processor is None or slam_processor.spatial_agent is None:
-        await sio.emit('agent_state', {'enabled': False}, to=sid)
-        return
-    await sio.emit('agent_state', slam_processor.spatial_agent.get_state(), to=sid)
+    _ensure_session(sid)
+    await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
 
 
 # ------------------------------
 # Background Streaming Task
 # ------------------------------
+async def _broadcast_slam_update(result: dict[str, Any]):
+    with _sids_lock:
+        target_sids = list(_connected_sids)
+
+    detections = result.get("detections", [])
+
+    for sid in target_sids:
+        active_queries = _session_active_queries(sid)
+        payload = dict(result)
+        payload["active_queries"] = active_queries
+        payload["detections"] = _filter_detections_by_queries(detections, active_queries)
+        await sio.emit("slam_update", payload, to=sid)
+
+
+def _schedule_agent_cycles_for_result(result: dict[str, Any]):
+    with _sessions_lock:
+        states = list(_sessions.values())
+
+    if not states:
+        return
+
+    submap_id = result.get("submap_id")
+    if submap_id is None:
+        num_submaps = int(result.get("num_submaps", 0) or 0)
+        submap_id = max(0, num_submaps - 1)
+
+    detections_all = result.get("detections", [])
+    loop = asyncio.get_event_loop()
+
+    for state in states:
+        if state.agent is None or not state.agent.enabled:
+            continue
+        active = sorted(state.manual_queries | state.agent_queries)
+        filtered = _filter_detections_by_queries(detections_all, active)
+        loop.run_in_executor(_agent_executor, state.agent.on_submap_processed, submap_id, filtered)
+
+
 async def stream_results():
     """Stream results to connected clients."""
     while True:
@@ -794,10 +1189,13 @@ async def stream_results():
             if client_connected.is_set():
                 try:
                     result = result_queue.get_nowait()
-                    await sio.emit('slam_update', result)
-                    print(f"Sent update: {result['n_points']} points, "
-                          f"{result['n_cameras']} cameras, "
-                          f"{result['num_submaps']} submaps")
+                    await _broadcast_slam_update(result)
+                    _schedule_agent_cycles_for_result(result)
+                    print(
+                        f"Sent update: {result['n_points']} points, "
+                        f"{result['n_cameras']} cameras, "
+                        f"{result['num_submaps']} submaps"
+                    )
                 except queue.Empty:
                     await asyncio.sleep(0.1)
             else:
@@ -817,21 +1215,17 @@ def initialize(
     vis_stride=4,
     serve_static_dir=None,
 ):
-    """Initialize SLAM processor and static routes.
-
-    Called from Modal's ASGI entrypoint or from start_server() for local dev.
-    Does NOT start a server — the ASGI framework handles all serving.
-    """
-    global slam_processor
+    """Initialize SLAM processor and static routes."""
+    global slam_processor, _openrouter_api_key
 
     if serve_static_dir:
         from flask import send_from_directory
 
-        @app.route('/')
+        @app.route("/")
         def serve_index():
-            return send_from_directory(serve_static_dir, 'index.html')
+            return send_from_directory(serve_static_dir, "index.html")
 
-        @app.route('/<path:path>')
+        @app.route("/<path:path>")
         def serve_static(path):
             return send_from_directory(serve_static_dir, path)
 
@@ -843,33 +1237,17 @@ def initialize(
     )
     slam_processor.frame_queue = frame_queue
     slam_processor.result_queue = result_queue
-    # Note: stream_results() is started lazily on first client connect (handle_connect)
-    # because asyncio.ensure_future() requires a running event loop.
 
-    # Initialize spatial agent if OpenRouter API key is available
-    openrouter_key = os.environ.get('OPENROUTER_API_KEY')
-    if openrouter_key:
-        from server.spatial_agent import SpatialAgent
+    # Session-scoped agent architecture keeps this None to avoid global per-submap callback.
+    slam_processor.spatial_agent = None
 
-        def _agent_emit(event, data):
-            """Emit agent events to all connected clients (thread-safe)."""
-            # sio.start_background_task is the python-socketio sanctioned way
-            # to emit from non-async (background thread) contexts.
-            try:
-                sio.start_background_task(sio.emit, event, data)
-            except Exception as e:
-                print(f"Agent emit error: {e}")
-
-        slam_processor.spatial_agent = SpatialAgent(
-            streaming_slam=slam_processor,
-            emit_fn=_agent_emit,
-            openrouter_api_key=openrouter_key,
-        )
-        print("Spatial Agent initialized (OpenRouter API key found)")
+    _openrouter_api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if _openrouter_api_key:
+        print("Spatial Agent runtime enabled (OPENROUTER_API_KEY found)")
     else:
-        print("Spatial Agent disabled (no OPENROUTER_API_KEY)")
+        print("Spatial Agent runtime disabled (no OPENROUTER_API_KEY)")
 
-    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'
+    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
     print("=" * 60)
     print("VGGT-SLAM 2.0 Streaming Server — initialized")
     print(f"GPU: {gpu}  |  submap_size={submap_size}  |  vis_stride={vis_stride}")
@@ -889,12 +1267,7 @@ def start_server(
     video_fps=2.0,
     serve_static_dir=None,
 ):
-    """Start the streaming SLAM server locally using uvicorn.
-
-    Args:
-        serve_static_dir: If set, serve built frontend files from this directory.
-            When None, the frontend is expected to run separately (e.g. via ``npm run dev``).
-    """
+    """Start the streaming SLAM server locally using uvicorn."""
     initialize(
         submap_size=submap_size,
         min_disparity=min_disparity,
@@ -903,40 +1276,39 @@ def start_server(
         serve_static_dir=serve_static_dir,
     )
 
-    # Start video feeder if provided
     video_feeder = None
     if video:
         video_feeder = VideoFeeder(video, fast=fast, target_fps=video_fps)
         video_feeder.start()
 
-    # SSL for HTTPS (required for phone camera access)
     ssl_certfile = None
     ssl_keyfile = None
     if not serve_static_dir:
-        cert_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.cert')
-        key_path = os.path.join(os.path.dirname(__file__), 'webserver', 'server.key')
+        cert_path = os.path.join(os.path.dirname(__file__), "webserver", "server.cert")
+        key_path = os.path.join(os.path.dirname(__file__), "webserver", "server.key")
         if os.path.exists(cert_path) and os.path.exists(key_path):
             ssl_certfile = cert_path
             ssl_keyfile = key_path
             print(f"SSL enabled: {cert_path}")
         else:
-            print("Warning: SSL certs not found. HTTPS disabled. "
-                  "Phone camera streaming requires HTTPS.")
+            print(
+                "Warning: SSL certs not found. HTTPS disabled. "
+                "Phone camera streaming requires HTTPS."
+            )
 
     print("=" * 60)
     print("VGGT-SLAM 2.0 Streaming Server")
     print("=" * 60)
     print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     if video:
-        print(f"Video input: {video} ({video_fps} fps, "
-              f"{'fast' if fast else 'real-time'})")
+        print(f"Video input: {video} ({video_fps} fps, {'fast' if fast else 'real-time'})")
     else:
         print("Input: live WebSocket feed")
     print(f"Submap size: {submap_size}")
     print(f"Temp directory: {slam_processor.temp_dir}")
     if serve_static_dir:
         print(f"Serving frontend from: {serve_static_dir}")
-    proto = 'https' if ssl_certfile else 'http'
+    proto = "https" if ssl_certfile else "http"
     print(f"Server: {proto}://0.0.0.0:{port}")
     print("=" * 60)
 
@@ -946,9 +1318,10 @@ def start_server(
         loop = 'uvloop'
     except ImportError:
         loop = 'asyncio'
+
     uvicorn.run(
         asgi_application,
-        host='0.0.0.0',
+        host="0.0.0.0",
         port=port,
         ssl_certfile=ssl_certfile,
         ssl_keyfile=ssl_keyfile,
@@ -959,29 +1332,25 @@ def start_server(
 # ------------------------------
 # Main
 # ------------------------------
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='VGGT-SLAM 2.0 Streaming Server')
-    parser.add_argument('--port', type=int, default=5000, help='Server port')
-    parser.add_argument('--video', type=str, default=None,
-                        help='Path to a video file for offline testing')
-    parser.add_argument('--fast', action='store_true',
-                        help='Feed video frames as fast as possible (no FPS throttle)')
-    parser.add_argument('--video-fps', type=float, default=2.0,
-                        help='Effective FPS to extract from video (default: 2)')
-    parser.add_argument('--submap-size', type=int, default=8,
-                        help='Frames per submap (default: 8)')
-    parser.add_argument('--min-disparity', type=float, default=30.0,
-                        help='Minimum disparity for keyframe selection (default: 30)')
-    parser.add_argument('--conf-threshold', type=float, default=25.0,
-                        help='Confidence threshold percentage (default: 25)')
-    parser.add_argument('--vis-stride', type=int, default=4,
-                        help='Stride for point cloud visualization (default: 4)')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="VGGT-SLAM 2.0 Streaming Server")
+    parser.add_argument("--port", type=int, default=5000, help="Server port")
+    parser.add_argument("--video", type=str, default=None, help="Path to a video file for offline testing")
+    parser.add_argument("--fast", action="store_true", help="Feed video frames as fast as possible")
+    parser.add_argument("--video-fps", type=float, default=2.0, help="Effective FPS to extract from video")
+    parser.add_argument("--submap-size", type=int, default=8, help="Frames per submap")
+    parser.add_argument(
+        "--min-disparity", type=float, default=30.0, help="Minimum disparity for keyframe selection"
+    )
+    parser.add_argument(
+        "--conf-threshold", type=float, default=25.0, help="Confidence threshold percentage"
+    )
+    parser.add_argument("--vis-stride", type=int, default=4, help="Visualization stride")
     args = parser.parse_args()
 
-    # Validate video path
     if args.video and not os.path.isfile(args.video):
         print(f"Video file not found: {args.video}")
-        exit(1)
+        raise SystemExit(1)
 
     start_server(
         port=args.port,

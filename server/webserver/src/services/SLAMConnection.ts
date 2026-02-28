@@ -250,6 +250,8 @@ export class SLAMConnection {
     this.socket.on('detection_partial', (data: DetectionPartialResult) => {
       console.log(`🔍 Detection partial: ${data.detections.length} detections, final=${data.is_final}`);
       this.onDetectionPartialCallback?.(data);
+    });
+
     // Agent events
     this.socket.on('agent_thought', (data: AgentThought) => {
       this.onAgentThoughtCallback?.(data);

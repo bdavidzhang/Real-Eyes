@@ -797,7 +797,7 @@ function setupChat(): void {
     const typingEl = addTypingIndicator();
 
     try {
-      const reply = await queryDedalus(msg);
+      const reply = await queryAssistant(msg);
       typingEl.remove();
       addChatMessage('assistant', reply);
       chatHistory.push({ role: 'assistant', content: reply });
@@ -830,10 +830,7 @@ function addTypingIndicator(): HTMLElement {
   return el;
 }
 
-async function queryDedalus(userMsg: string): Promise<string> {
-  const apiKey = ((import.meta as any).env as any).VITE_DEDALUS_API_KEY as string;
-  if (!apiKey) throw new Error('API key not configured');
-
+async function queryAssistant(userMsg: string): Promise<string> {
   const contextParts: string[] = [];
   if (snapshot) {
     contextParts.push('The user has completed a 3D SLAM scan with ' + snapshot.n_points + ' points, ' + snapshot.n_cameras + ' camera frames, and ' + snapshot.num_submaps + ' submaps.');
@@ -843,32 +840,29 @@ async function queryDedalus(userMsg: string): Promise<string> {
     contextParts.push('Objects detected in the scan: ' + objs.join(', ') + '.');
   }
 
-  const systemPrompt = 'You are a helpful assistant for a 3D SLAM mapping system. You help users understand their scanned environment and the objects detected within it. Keep responses concise (2-4 sentences). ' + contextParts.join(' ');
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...chatHistory.slice(-10),
-    { role: 'user', content: userMsg },
-  ];
-
-  const response = await fetch('https://api.dedaluslabs.ai/v1/chat/completions', {
+  const response = await fetch(`${window.location.origin}/api/assistant/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + apiKey,
     },
     body: JSON.stringify({
-      model: 'gpt-4',
-      messages,
-      temperature: 0.5,
-      max_tokens: 512,
+      message: userMsg,
+      history: chatHistory.slice(-11, -1),
+      context: {
+        summary: contextParts.join(' '),
+        snapshot,
+        detections: lastDetections,
+      },
     }),
   });
 
-  if (!response.ok) throw new Error('API error: ' + response.statusText);
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error('API error: ' + err);
+  }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? 'No response received.';
+  return data.reply ?? 'No response received.';
 }
 
 // ── Detection Debug Pipeline ──

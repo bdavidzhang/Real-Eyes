@@ -131,6 +131,10 @@ export interface AgentThought {
   type: 'observation' | 'thinking' | 'chat_response' | 'error' | 'action';
   content: string;
   keyframe_b64?: string;
+  subagent?: string;
+  phase?: string;
+  confidence?: number;
+  attachments?: AgentAttachment[];
 }
 
 export interface AgentAction {
@@ -150,6 +154,7 @@ export interface AgentFinding {
   confidence: number;
   position?: number[];
   mission_id?: number;
+  evidence?: Record<string, unknown>;
 }
 
 export interface MissionState {
@@ -173,4 +178,12 @@ export interface AgentState {
   current_goal: string | null;
   submaps_processed: number;
   coverage_estimate: number;
+  health?: 'ok' | 'degraded' | 'disabled';
+  degraded_mode?: boolean;
+}
+
+export interface AgentAttachment {
+  kind: 'keyframe' | 'mask' | 'other';
+  image_b64?: string;
+  label?: string;
 }

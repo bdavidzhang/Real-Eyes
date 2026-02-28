@@ -104,7 +104,7 @@ class StreamingSLAM:
         self.frame_queue = None
         self.result_queue = None
 
-        # Spatial agent (set by app.py if GEMINI_API_KEY is available)
+        # Spatial agent (set by app.py when session-scoped agent runtime is enabled)
         self.spatial_agent = None
 
         print(f"Temp directory: {self.temp_dir}")
@@ -942,6 +942,7 @@ class StreamingSLAM:
         self.pending_beacons.clear()
         self.resolved_beacons.clear()
         self.latest_scene_center = np.zeros(3)
+        self.active_queries = []
 
         with self._detection_lock:
             self.accumulated_detections = []
