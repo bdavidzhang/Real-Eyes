@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Your Tracking Plan - ASI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <canvas id="meshBg" class="mesh-bg"></canvas>
+  <div id="app">
+    <div class="plan-container">
+      <div class="plan-header">
+        <h1 class="plan-title">Here's Your ASI Tracking Plan</h1>
+        <p class="plan-subtitle">Review and customize before starting</p>
+      </div>
+
+      <div id="loadingState" class="loading-state">
+        <div class="loading-spinner"></div>
+        <p>Analyzing your tracking needs...</p>
+      </div>
+
+      <div id="planContent" class="plan-content" style="display: none;">
+        <!-- Objects Section -->
+        <div class="plan-section glass-panel">
+          <h3 class="section-title">Recommended Objects to Track</h3>
+          <p class="section-subtitle">You can add or remove objects</p>
+          <div id="objectsList" class="objects-list"></div>
+          <div class="add-object-form">
+            <input
+              type="text"
+              id="customObjectInput"
+              class="glass-input"
+              placeholder="Add custom object..."
+            />
+            <button id="addObjectBtn" class="btn-secondary">Add</button>
+          </div>
+        </div>
+
+        <!-- Waypoints Section -->
+        <div class="plan-section glass-panel">
+          <div class="feature-header">
+            <div>
+              <h3 class="section-title">Waypoints</h3>
+            </div>
+            <span class="feature-badge">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+          </div>
+          <p id="waypointsJustification" class="feature-justification"></p>
+        </div>
+
+        <!-- Pathfinding Section -->
+        <div class="plan-section glass-panel">
+          <div class="feature-header">
+            <div>
+              <h3 class="section-title">Pathfinding</h3>
+            </div>
+            <span class="feature-badge">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+          </div>
+          <p id="pathfindingJustification" class="feature-justification"></p>
+        </div>
+
+        <button id="confirmBtn" class="btn-primary btn-large">
+          Confirm & Start Tracking →
+        </button>
+      </div>
+
+      <div id="errorState" class="error-state" style="display: none;">
+        <p>Unable to generate plan. Please try again.</p>
+        <button id="retryBtn" class="btn-secondary">Retry</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/plan.ts"></script>
+</body>
+</html>

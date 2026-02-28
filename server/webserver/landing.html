@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASI - Artificial Spatial Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <!-- Mesh Background -->
+  <canvas id="meshBg" class="mesh-bg"></canvas>
+
+  <!-- 3D Background -->
+  <div id="hero-3d-canvas" class="hero-canvas"></div>
+
+  <!-- Content Overlay -->
+  <div class="landing-overlay">
+    <div class="landing-content">
+      <h1 class="landing-title">Welcome to ASI</h1>
+      <h2 class="landing-subtitle">Artificial Spatial Intelligence</h2>
+      <p class="landing-description">
+        True generalizable reasoning in your local IRL environment
+      </p>
+
+      <form id="promptForm" class="prompt-form glass-panel">
+        <textarea
+          id="promptInput"
+          class="prompt-input glass-input"
+          placeholder="Describe what you'd like to track... (e.g., 'I'm a firefighter scanning a live fire scene')"
+          rows="3"
+          required
+        ></textarea>
+        <button type="submit" class="btn-primary">
+          Start Tracking →
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/src/landing.ts"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>VGGT-SLAM - Camera Streamer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <canvas id="arOverlay"></canvas>
+
+    <div id="overlay">
+      <div id="minimap-container" class="glass-panel">
+        <button id="minimapToggle" class="minimap-toggle" title="Toggle minimap">−</button>
+        <canvas id="minimapCanvas" width="200" height="200"></canvas>
+      </div>
+
+      <div id="status" class="glass-panel">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Not Connected</span>
+        <span id="fpsText"></span>
+      </div>
+
+      <div id="beacon-controls" class="glass-panel">
+        <div id="beacon-mode-toggle">
+          <button id="handModeBtn" class="mode-btn active">✋ Hand</button>
+          <button id="buttonModeBtn" class="mode-btn">📍 Button</button>
+        </div>
+        <button id="placeBeaconBtn" class="beacon-btn" style="display: none;">Drop Beacon</button>
+        <button id="clearBeaconsBtn" class="beacon-btn clear-btn">Clear All</button>
+        <span id="beaconStatus" class="beacon-status"></span>
+      </div>
+
+      <div id="controls" class="glass-panel">
+        <button id="startBtn" class="primary">Start Streaming</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <a href="/" id="viewerLink">Open Viewer</a>
+      </div>
+    </div>
+
+    <script type="module" src="/src/sender.ts"></script>
+  </body>
+</html>

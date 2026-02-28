@@ -1,0 +1,129 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-primary);
+  font-family: var(--font-body);
+}
+
+.hero-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  /* Allow pointer events so user can interact with the 3D scene */
+  pointer-events: auto;
+}
+
+.mesh-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.landing-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  background: radial-gradient(
+    circle at center,
+    rgba(0, 0, 0, 0.3) 0%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  transition: background 400ms ease, opacity 400ms ease, justify-content 0ms;
+  /* Let pointer events pass to the canvas behind, except for interactive content */
+  pointer-events: none;
+}
+
+.landing-overlay.active {
+  justify-content: flex-start;
+  background: radial-gradient(circle at 70% 50%, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.5) 100%);
+}
+
+.landing-content {
+  max-width: 600px;
+  width: 90%;
+  text-align: center;
+  padding: 40px;
+  transition: transform 600ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease, text-align 0ms, margin 600ms cubic-bezier(.2,.9,.2,1);
+  /* This panel should still receive pointer events (form, buttons) */
+  pointer-events: auto;
+}
+
+/* When user first interacts, align content to the left */
+.landing-content.active {
+  text-align: left;
+  margin-left: 5vw;
+  opacity: 0.95;
+}
+
+.landing-title {
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.landing-subtitle {
+  font-size: clamp(24px, 4vw, 36px);
+  font-weight: 500;
+  margin: 0 0 16px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+.landing-description {
+  font-size: 18px;
+  color: var(--text-secondary);
+  margin: 0 0 48px 0;
+  line-height: 1.6;
+}
+
+.prompt-form {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.prompt-input {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font-size: 15px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.prompt-form .btn-primary {
+  width: 100%;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .landing-content {
+    padding: 20px;
+  }
+
+  .landing-description {
+    margin-bottom: 32px;
+  }
+
+  .prompt-form {
+    padding: 20px;
+  }
+}
