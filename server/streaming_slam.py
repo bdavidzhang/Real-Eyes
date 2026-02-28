@@ -77,6 +77,8 @@ class StreamingSLAM:
         self.image_names_subset = []
         self.temp_dir = tempfile.mkdtemp()
         self.is_running = False
+        self._stop_event = threading.Event()
+        self._process_thread: threading.Thread | None = None
 
         # Beacon state
         self.pending_beacons = []
@@ -110,14 +112,29 @@ class StreamingSLAM:
         print(f"Temp directory: {self.temp_dir}")
 
     def start(self):
-        if not self.is_running:
-            self.is_running = True
-            threading.Thread(target=self.process_loop, daemon=True).start()
-            print("SLAM processing loop started")
+        if self._process_thread is not None and self._process_thread.is_alive():
+            return
+        self.is_running = True
+        self._stop_event.clear()
+        self._process_thread = threading.Thread(
+            target=self.process_loop,
+            daemon=True,
+            name="StreamingSLAMLoop",
+        )
+        self._process_thread.start()
+        print("SLAM processing loop started")
 
     def stop(self):
         self.is_running = False
+        self._stop_event.set()
         self.image_names_subset.clear()
+        if (
+            self._process_thread is not None
+            and self._process_thread.is_alive()
+            and threading.current_thread() is not self._process_thread
+        ):
+            self._process_thread.join(timeout=2.0)
+        self._process_thread = None
         print("SLAM processing loop stopped")
 
     # ------------------------------------------------------------------
@@ -126,7 +143,7 @@ class StreamingSLAM:
 
     def process_loop(self):
         """Main processing loop — reads frames, checks disparity, triggers submap processing."""
-        while self.is_running:
+        while self.is_running and not self._stop_event.is_set():
             try:
                 frame_data = self.frame_queue.get(timeout=1)
 
@@ -441,6 +458,29 @@ class StreamingSLAM:
             'resolved_beacons': self.resolved_beacons,
         }
 
+    def _cache_get(self, key):
+        with self._detection_lock:
+            return self._sam_cache.get(key)
+
+    def _cache_set(self, key, value):
+        with self._detection_lock:
+            self._sam_cache[key] = value
+
+    def _cache_delete_removed_queries(self, removed_queries):
+        if not removed_queries:
+            return
+        with self._detection_lock:
+            for k in [k for k in self._sam_cache if k[2] in removed_queries]:
+                del self._sam_cache[k]
+
+    def _cache_clear(self):
+        with self._detection_lock:
+            self._sam_cache = {}
+
+    def _cache_items_snapshot(self):
+        with self._detection_lock:
+            return list(self._sam_cache.items())
+
     # ------------------------------------------------------------------
     # Object detection (cache-aware)
     # ------------------------------------------------------------------
@@ -453,17 +493,14 @@ class StreamingSLAM:
             new_queries = set(self.active_queries)
 
         if len(self.active_queries) == 0:
-            self._sam_cache.clear()
+            self._cache_clear()
             with self._detection_lock:
                 self.accumulated_detections = []
             return
 
         # Purge cache for removed queries
         removed = old_queries - new_queries
-        if removed:
-            keys_to_delete = [k for k in self._sam_cache if k[2] in removed]
-            for k in keys_to_delete:
-                del self._sam_cache[k]
+        self._cache_delete_removed_queries(removed)
 
         # Run CLIP+SAM on all existing submaps for new queries
         added = new_queries - old_queries
@@ -483,7 +520,7 @@ class StreamingSLAM:
             new_queries = set(self.active_queries)
 
         if not self.active_queries:
-            self._sam_cache.clear()
+            self._cache_clear()
             with self._detection_lock:
                 self.accumulated_detections = []
             yield {'detections': [], 'is_final': True}
@@ -491,9 +528,7 @@ class StreamingSLAM:
 
         # Purge cache for removed queries
         removed = old_queries - new_queries
-        if removed:
-            for k in [k for k in self._sam_cache if k[2] in removed]:
-                del self._sam_cache[k]
+        self._cache_delete_removed_queries(removed)
 
         added = sorted(new_queries - old_queries)
         all_submaps = self._sorted_submaps()
@@ -564,11 +599,11 @@ class StreamingSLAM:
             candidate_frames = []
             for frame_idx in range(last_orig + 1):
                 cache_key = (submap_id, frame_idx, query)
-                if cache_key in self._sam_cache:
+                if self._cache_get(cache_key) is not None:
                     continue
                 sim_val = sims[frame_idx].item()
                 if sim_val < clip_thresh:
-                    self._sam_cache[cache_key] = []
+                    self._cache_set(cache_key, [])
                 else:
                     candidate_frames.append((sim_val, frame_idx))
 
@@ -579,7 +614,7 @@ class StreamingSLAM:
 
             # Mark frames outside top-K as empty so they aren't reconsidered
             for _, frame_idx in skipped_frames:
-                self._sam_cache[(submap_id, frame_idx, query)] = []
+                self._cache_set((submap_id, frame_idx, query), [])
 
             for sim_val, frame_idx in top_frames:
                 cache_key = (submap_id, frame_idx, query)
@@ -599,12 +634,12 @@ class StreamingSLAM:
                                 'clip_score': float(sim_val),
                                 'bbox_3d': None,
                             })
-                    self._sam_cache[cache_key] = passed
+                    self._cache_set(cache_key, passed)
                     if passed:
                         new_mask_keys.append(cache_key)
                 except Exception as e:
                     print(f"  SAM error submap {submap_id} frame {frame_idx} query '{query}': {e}")
-                    self._sam_cache[cache_key] = []
+                    self._cache_set(cache_key, [])
 
         return new_mask_keys
 
@@ -614,7 +649,7 @@ class StreamingSLAM:
         scene_center = self.latest_scene_center
         for key in cache_keys:
             submap_id, frame_idx, _query = key
-            masks = self._sam_cache.get(key, [])
+            masks = self._cache_get(key) or []
             if not masks:
                 continue
             submap = self.solver.map.get_submap(submap_id)
@@ -625,6 +660,7 @@ class StreamingSLAM:
                     submap, frame_idx, entry['mask_2d'],
                     self.solver.graph, scene_center
                 )
+            self._cache_set(key, masks)
 
     def _sorted_submaps(self, submaps=None):
         """Return submaps in deterministic key order for consistent reconciliation."""
@@ -658,7 +694,7 @@ class StreamingSLAM:
         """Recompute ALL 3D bboxes from cached SAM masks (after graph optimization)."""
         od = self.object_detector
         scene_center = self.latest_scene_center
-        for key, masks in self._sam_cache.items():
+        for key, masks in self._cache_items_snapshot():
             if not masks:
                 continue
             submap_id, frame_idx, _query = key
@@ -670,6 +706,7 @@ class StreamingSLAM:
                     submap, frame_idx, entry['mask_2d'],
                     self.solver.graph, scene_center
                 )
+            self._cache_set(key, masks)
 
     def _dedup_and_store(self):
         """Build detection list from cache, dedup, store.
@@ -679,7 +716,7 @@ class StreamingSLAM:
         and well-segmented (high SAM), not just whichever had the biggest blob.
         """
         raw = []
-        for (submap_id, frame_idx, query), masks in self._sam_cache.items():
+        for (submap_id, frame_idx, query), masks in self._cache_items_snapshot():
             for entry in masks:
                 bbox = entry.get('bbox_3d')
                 if bbox is None:
@@ -942,11 +979,11 @@ class StreamingSLAM:
         self.pending_beacons.clear()
         self.resolved_beacons.clear()
         self.latest_scene_center = np.zeros(3)
-        self.active_queries = []
 
         with self._detection_lock:
+            self.active_queries = []
             self.accumulated_detections = []
-        self._sam_cache = {}
+        self._cache_clear()
         self._last_stream_data = None
         self._submap_cache.clear()
         self._scene_center = np.zeros(3)

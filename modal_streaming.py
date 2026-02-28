@@ -66,6 +66,7 @@ image = (
         "asgiref",
         "uvicorn",
         "openai>=1.30",
+        "pydantic>=2.8",
         # Misc
         "termcolor",
         "tqdm",
@@ -177,7 +178,7 @@ def download_models():
 # ---------------------------------------------------------------------------
 @app.function(
     image=image,
-    gpu="A100-80GB",
+    gpu="H100",
     volumes={CACHE_PATH: model_cache},
     secrets=[
         modal.Secret.from_name("huggingface-secret"),

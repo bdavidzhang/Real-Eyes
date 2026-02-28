@@ -68,6 +68,13 @@ export class UIManager {
   private lastUpdate = Date.now();
   private frameCount = 0;
 
+  // Notification queue (prevents DOM churn during bursty events)
+  private notificationQueue: Array<{ message: string; type: 'info' | 'success' | 'error' }> = [];
+  private activeNotifications: HTMLElement[] = [];
+  private notificationFlushScheduled = false;
+  private maxQueuedNotifications = 64;
+  private maxActiveNotifications = 5;
+
   // Callbacks
   private onConnectCallback?: () => void;
   private onDisconnectCallback?: () => void;
@@ -392,15 +399,61 @@ export class UIManager {
    * Show notification message
    */
   showNotification(message: string, type: 'info' | 'success' | 'error' = 'info'): void {
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.textContent = message;
-    document.body.appendChild(notification);
+    this.notificationQueue.push({ message, type });
+    if (this.notificationQueue.length > this.maxQueuedNotifications) {
+      this.notificationQueue = this.notificationQueue.slice(-this.maxQueuedNotifications);
+    }
+    this.scheduleNotificationFlush();
+  }
 
-    setTimeout(() => {
-      notification.classList.add('fade-out');
-      setTimeout(() => notification.remove(), 300);
-    }, 3000);
+  private scheduleNotificationFlush(): void {
+    if (this.notificationFlushScheduled) {
+      return;
+    }
+    this.notificationFlushScheduled = true;
+    requestAnimationFrame(() => {
+      this.notificationFlushScheduled = false;
+      this.flushNotifications();
+    });
+  }
+
+  private flushNotifications(): void {
+    while (
+      this.notificationQueue.length > 0
+      && this.activeNotifications.length < this.maxActiveNotifications
+    ) {
+      const next = this.notificationQueue.shift();
+      if (!next) {
+        break;
+      }
+
+      const notification = document.createElement('div');
+      notification.className = `notification notification-${next.type}`;
+      notification.textContent = next.message;
+      notification.style.right = '24px';
+      notification.style.left = 'auto';
+      notification.style.transform = 'translateY(0)';
+
+      document.body.appendChild(notification);
+      this.activeNotifications.push(notification);
+      this.repositionNotifications();
+
+      setTimeout(() => {
+        notification.classList.add('fade-out');
+        setTimeout(() => {
+          notification.remove();
+          this.activeNotifications = this.activeNotifications.filter((n) => n !== notification);
+          this.repositionNotifications();
+          this.flushNotifications();
+        }, 300);
+      }, 2200);
+    }
+  }
+
+  private repositionNotifications(): void {
+    this.activeNotifications.forEach((notification, index) => {
+      notification.style.bottom = `${96 + index * 56}px`;
+    });
   }
 
   /**

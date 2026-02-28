@@ -2,7 +2,7 @@ import { SLAMConnection } from './services/SLAMConnection';
 import { SceneManager } from './services/SceneManager';
 import { UIManager } from './components/UIManager';
 import { AgentPanel } from './components/AgentPanel';
-import type { SLAMUpdate } from './types';
+import type { SLAMUpdate, AgentUICommand, AgentUIResult } from './types';
 import './styles/dashboard.css';
 import './styles/agent.css';
 
@@ -37,7 +37,7 @@ class SLAMViewerApp {
     this.setupConnections();
     this.setupEventHandlers();
     this.setupAgentHandlers();
-    this.loadIncomingTrackingPlan();
+    void this.loadIncomingTrackingPlan();
 
     console.log('✅ VGGT-SLAM Viewer ready!');
   }
@@ -272,6 +272,15 @@ class SLAMViewerApp {
       this.agentPanel.handleState(data);
     });
 
+    this.connection.onAgentToolEvent((data) => {
+      this.agentPanel.handleToolEvent(data);
+    });
+
+    this.connection.onAgentUICommand((cmd) => {
+      this.agentPanel.handleUICommand(cmd);
+      void this.handleAgentUICommand(cmd);
+    });
+
     // Agent panel → server
     this.agentPanel.onChatSend((message) => {
       this.connection.sendAgentChat(message);
@@ -303,6 +312,111 @@ class SLAMViewerApp {
     this.connection.onConnect(() => {
       setTimeout(() => this.connection.requestAgentState(), 200);
     });
+  }
+
+  private async handleAgentUICommand(cmd: AgentUICommand): Promise<void> {
+    const ack = (status: 'ok' | 'error' | 'ignored' | 'timeout', result?: Record<string, unknown>, error?: string) => {
+      const uiResult: AgentUIResult = {
+        id: cmd.id,
+        status,
+        result,
+        error,
+      };
+      this.connection.sendAgentUIResult(uiResult);
+      this.agentPanel.handleUIResult(uiResult, cmd.name);
+    };
+
+    try {
+      switch (cmd.name) {
+        case 'set_detection_queries': {
+          const raw = cmd.args.queries;
+          if (!Array.isArray(raw)) {
+            ack('ignored', undefined, 'queries must be an array');
+            return;
+          }
+          const queries = raw.map((q) => String(q).trim().toLowerCase()).filter((q) => q.length > 0);
+          this.connection.setDetectionQueries(queries);
+          this.uiManager.updateDetectionQueries(queries);
+          ack('ok', { query_count: queries.length });
+          return;
+        }
+        case 'focus_detection': {
+          const center = cmd.args.center;
+          if (Array.isArray(center) && center.length === 3) {
+            const xyz = center.map((v) => Number(v));
+            this.sceneManager.focusOnPoint([xyz[0], xyz[1], xyz[2]]);
+            ack('ok', { centered: true });
+            return;
+          }
+          const query = typeof cmd.args.query === 'string' ? cmd.args.query : null;
+          if (query) {
+            const focused = this.sceneManager.focusOnDetectionQuery(query);
+            ack(focused ? 'ok' : 'ignored', { query });
+            return;
+          }
+          ack('ignored', undefined, 'missing center or query');
+          return;
+        }
+        case 'show_waypoint': {
+          const id = String(cmd.args.waypoint_id ?? 'agent-waypoint');
+          const pos = cmd.args.position;
+          if (!Array.isArray(pos) || pos.length !== 3) {
+            ack('ignored', undefined, 'invalid waypoint position');
+            return;
+          }
+          this.sceneManager.showWaypoint(
+            id,
+            [Number(pos[0]), Number(pos[1]), Number(pos[2])],
+            typeof cmd.args.label === 'string' ? cmd.args.label : undefined,
+          );
+          ack('ok', { waypoint_id: id });
+          return;
+        }
+        case 'show_path': {
+          const rawPoints = cmd.args.points;
+          if (!Array.isArray(rawPoints)) {
+            ack('ignored', undefined, 'invalid path points');
+            return;
+          }
+          const points = rawPoints
+            .filter((pt): pt is unknown[] => Array.isArray(pt) && pt.length === 3)
+            .map((pt) => [Number(pt[0]), Number(pt[1]), Number(pt[2])] as [number, number, number]);
+          this.sceneManager.showPath(
+            points,
+            typeof cmd.args.path_id === 'string' ? cmd.args.path_id : 'agent-path',
+          );
+          ack('ok', { points: points.length });
+          return;
+        }
+        case 'show_toast': {
+          const msg = String(cmd.args.message ?? '').trim();
+          if (!msg) {
+            ack('ignored', undefined, 'empty message');
+            return;
+          }
+          const level = cmd.args.level === 'success' || cmd.args.level === 'error' ? cmd.args.level : 'info';
+          this.uiManager.showNotification(msg, level);
+          ack('ok');
+          return;
+        }
+        case 'open_detection_preview': {
+          const submap = Number(cmd.args.submap_id);
+          const frame = Number(cmd.args.frame_idx);
+          const query = String(cmd.args.query ?? '').trim();
+          if (!Number.isFinite(submap) || !Number.isFinite(frame) || !query) {
+            ack('ignored', undefined, 'invalid preview arguments');
+            return;
+          }
+          this.connection.getDetectionPreview(submap, frame, query);
+          ack('ok', { submap_id: submap, frame_idx: frame, query });
+          return;
+        }
+        default:
+          ack('ignored', undefined, 'unknown command');
+      }
+    } catch (error) {
+      ack('error', undefined, (error as Error).message);
+    }
   }
 
   /**
@@ -344,7 +458,7 @@ class SLAMViewerApp {
   /**
    * Load tracking plan from plan page if available
    */
-  private loadIncomingTrackingPlan(): void {
+  private async loadIncomingTrackingPlan(): Promise<void> {
     const params = new URLSearchParams(window.location.search);
     const source = params.get('source');
     const modeParam = params.get('mode');

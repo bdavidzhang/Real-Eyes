@@ -1,5 +1,17 @@
 import { io, Socket } from 'socket.io-client';
-import type { SLAMUpdate, ConnectionState, DetectionPreview, DetectionPartialResult, AgentThought, AgentAction, AgentFinding, AgentState } from '../types';
+import type {
+  SLAMUpdate,
+  ConnectionState,
+  DetectionPreview,
+  DetectionPartialResult,
+  AgentThought,
+  AgentAction,
+  AgentFinding,
+  AgentState,
+  AgentUICommand,
+  AgentUIResult,
+  AgentToolEvent,
+} from '../types';
 
 /**
  * Manages WebSocket connection to SLAM server
@@ -27,6 +39,8 @@ export class SLAMConnection {
   private onAgentActionCallback?: (data: AgentAction) => void;
   private onAgentFindingCallback?: (data: AgentFinding) => void;
   private onAgentStateCallback?: (data: AgentState) => void;
+  private onAgentUICommandCallback?: (data: AgentUICommand) => void;
+  private onAgentToolEventCallback?: (data: AgentToolEvent) => void;
 
   constructor(serverUrl: string) {
     this.serverUrl = serverUrl;
@@ -47,6 +61,17 @@ export class SLAMConnection {
     });
 
     this.setupEventHandlers();
+  }
+
+  async waitForConnected(timeoutMs = 5000): Promise<void> {
+    if (this.isConnected()) return;
+    const start = Date.now();
+    while (!this.isConnected()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('Connection timeout');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
 
   /**
@@ -269,6 +294,14 @@ export class SLAMConnection {
       this.onAgentStateCallback?.(data);
     });
 
+    this.socket.on('agent_ui_command', (data: AgentUICommand) => {
+      this.onAgentUICommandCallback?.(data);
+    });
+
+    this.socket.on('agent_tool_event', (data: AgentToolEvent) => {
+      this.onAgentToolEventCallback?.(data);
+    });
+
     this.socket.on('connect_error', (error) => {
       console.error('❌ Connection error:', error);
       this.reconnectAttempts++;
@@ -302,6 +335,14 @@ export class SLAMConnection {
     this.onAgentStateCallback = callback;
   }
 
+  onAgentUICommand(callback: (data: AgentUICommand) => void): void {
+    this.onAgentUICommandCallback = callback;
+  }
+
+  onAgentToolEvent(callback: (data: AgentToolEvent) => void): void {
+    this.onAgentToolEventCallback = callback;
+  }
+
   // Agent emit methods
   sendAgentChat(message: string): void {
     if (this.socket && this.isConnected()) {
@@ -324,6 +365,12 @@ export class SLAMConnection {
   requestAgentState(): void {
     if (this.socket && this.isConnected()) {
       this.socket.emit('get_agent_state');
+    }
+  }
+
+  sendAgentUIResult(result: AgentUIResult): void {
+    if (this.socket && this.isConnected()) {
+      this.socket.emit('agent_ui_result', result);
     }
   }
 

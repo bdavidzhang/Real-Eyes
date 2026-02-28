@@ -9,7 +9,7 @@ IMAGE_FOLDER="${1:-./office_loop}"
 SUBMAP_SIZE="${2:-16}"
 MAX_LOOPS="${3:-1}"
 
-STREAM_LOG=$(mktemp /tmp/modal_stream_XXXX.log)
+STREAM_LOG=$(mktemp /tmp/modal_stream_XXXXX.log)
 
 echo "========================================================"
 echo "  VGGT-SLAM Modal Launcher"

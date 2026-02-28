@@ -47,11 +47,16 @@ from vggt_slam.object_detector import ObjectDetector
 # Flask + python-socketio Setup
 # ------------------------------
 app = Flask(__name__)
-CORS(app)
+_cors_raw = os.environ.get("CORS_ALLOWED_ORIGINS", "*").strip()
+if _cors_raw == "*":
+    _cors_origins: str | list[str] = "*"
+else:
+    _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+CORS(app, origins=_cors_origins if _cors_origins != "*" else "*")
 
 sio = socketio_pkg.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",
+    cors_allowed_origins=_cors_origins,
     max_http_buffer_size=10_000_000,
     ping_timeout=120,
     ping_interval=25,
@@ -102,6 +107,15 @@ _assistant_client: Optional[OpenRouterClient] = None
 # OpenRouter key cached during initialize()
 _openrouter_api_key: str = ""
 
+# Input guardrails (no-auth deployment still needs abuse protection)
+MAX_QUERY_COUNT = int(os.environ.get("MAX_QUERY_COUNT", "16"))
+MAX_QUERY_LEN = int(os.environ.get("MAX_QUERY_LEN", "120"))
+MAX_FRAME_B64_LEN = int(os.environ.get("MAX_FRAME_B64_LEN", "10000000"))
+FRAME_RATE_WINDOW_S = float(os.environ.get("FRAME_RATE_WINDOW_S", "1.0"))
+FRAME_RATE_LIMIT = int(os.environ.get("FRAME_RATE_LIMIT", "45"))
+
+_frame_rate_state: dict[str, list[float]] = {}
+
 
 @dataclass
 class SessionState:
@@ -110,6 +124,7 @@ class SessionState:
     agent_queries: set[str] = field(default_factory=set)
     agent: Any = None
     connected_at: float = field(default_factory=time.time)
+    ui_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 _sessions: dict[str, SessionState] = {}
@@ -130,8 +145,12 @@ def _normalize_query_list(queries: list[Any]) -> list[str]:
     norm: list[str] = []
     for item in queries:
         q = str(item).strip().lower()
+        if len(q) > MAX_QUERY_LEN:
+            q = q[:MAX_QUERY_LEN]
         if q and q not in norm:
             norm.append(q)
+        if len(norm) >= MAX_QUERY_COUNT:
+            break
     return norm
 
 
@@ -154,9 +173,38 @@ def _filter_detections_by_queries(detections: list[dict[str, Any]], queries: lis
     ]
 
 
+def _allow_frame_for_sid(sid: str) -> bool:
+    now = time.time()
+    with _sessions_lock:
+        ts = _frame_rate_state.setdefault(sid, [])
+        ts.append(now)
+        cutoff = now - FRAME_RATE_WINDOW_S
+        while ts and ts[0] < cutoff:
+            ts.pop(0)
+        return len(ts) <= FRAME_RATE_LIMIT
+
+
+def _is_sid_connected(sid: str) -> bool:
+    with _sids_lock:
+        return sid in _connected_sids
+
+
 def _emit_to_sid_threadsafe(sid: str, event: str, data: dict[str, Any]):
+    loop = _event_loop
+    if loop is None or loop.is_closed():
+        return
+    if not _is_sid_connected(sid):
+        return
+
+    def _on_done(fut: concurrent.futures.Future):
+        try:
+            fut.result()
+        except Exception as emit_err:
+            print(f"Emit error sid={sid} event={event}: {emit_err}")
+
     try:
-        sio.start_background_task(sio.emit, event, data, to=sid)
+        fut = asyncio.run_coroutine_threadsafe(sio.emit(event, data, to=sid), loop)
+        fut.add_done_callback(_on_done)
     except Exception as e:
         print(f"Emit error sid={sid} event={event}: {e}")
 
@@ -207,7 +255,7 @@ def _on_agent_queries_changed(sid: str, queries: list[str]):
             return
         state.agent_queries = set(_normalize_query_list(queries))
 
-    if _event_loop is None:
+    if _event_loop is None or _event_loop.is_closed():
         return
 
     fut = asyncio.run_coroutine_threadsafe(
@@ -555,17 +603,25 @@ def reset():
         except Exception:
             break
 
+    agents_to_reset = []
     with _sessions_lock:
+        _frame_rate_state.clear()
         for state in _sessions.values():
             state.manual_queries.clear()
             state.agent_queries.clear()
             if state.agent is not None:
-                state.agent.reset()
+                agents_to_reset.append(state.agent)
+
+    for agent in agents_to_reset:
+        try:
+            agent.reset()
+        except Exception:
+            pass
 
     slam_processor.soft_reset()
     slam_processor.set_detection_queries([])
 
-    if _event_loop is not None:
+    if _event_loop is not None and not _event_loop.is_closed():
         asyncio.run_coroutine_threadsafe(sio.emit("slam_reset", {"status": "reset"}), _event_loop)
 
     return jsonify({"status": "reset_complete", "message": "SLAM and session state cleared"})
@@ -864,7 +920,7 @@ async def handle_connect(sid, environ, auth):
     if slam_processor is None:
         return
 
-    _event_loop = asyncio.get_event_loop()
+    _event_loop = asyncio.get_running_loop()
 
     with _sids_lock:
         _connected_sids.add(sid)
@@ -883,6 +939,7 @@ async def handle_connect(sid, environ, auth):
 
 @sio.on("disconnect")
 async def handle_disconnect(sid):
+    global _event_loop
     if slam_processor is None:
         return
 
@@ -891,13 +948,20 @@ async def handle_disconnect(sid):
         remaining = len(_connected_sids)
 
     with _sessions_lock:
-        _sessions.pop(sid, None)
+        state = _sessions.pop(sid, None)
+        _frame_rate_state.pop(sid, None)
+    if state is not None and state.agent is not None:
+        try:
+            state.agent.shutdown()
+        except Exception:
+            pass
 
     print(f"Client disconnected ({remaining} remaining)")
 
     await _refresh_global_detection_queries(trigger_sid=None, emit_progress=False)
 
     if remaining == 0:
+        _event_loop = None
         client_connected.clear()
         slam_processor.stop()
         _stop_demo_feeder()
@@ -918,6 +982,16 @@ async def handle_disconnect(sid):
 @sio.on("frame")
 async def handle_frame(sid, data):
     if slam_processor is None:
+        return
+    if not isinstance(data, dict):
+        return
+    img_b64 = data.get("image")
+    if not isinstance(img_b64, str) or not img_b64:
+        return
+    if len(img_b64) > MAX_FRAME_B64_LEN:
+        await sio.emit("error", {"error": "frame_too_large"}, to=sid)
+        return
+    if not _allow_frame_for_sid(sid):
         return
     if not frame_queue.full():
         frame_queue.put(data)
@@ -944,8 +1018,12 @@ async def handle_stop(sid, data=None):
 async def handle_set_detection_queries(sid, data):
     if slam_processor is None:
         return
-
-    queries = _normalize_query_list(data.get("queries", []))
+    if not isinstance(data, dict):
+        data = {}
+    raw_queries = data.get("queries", [])
+    if not isinstance(raw_queries, list):
+        raw_queries = []
+    queries = _normalize_query_list(raw_queries)
     state = _ensure_session(sid)
 
     with _sessions_lock:
@@ -960,9 +1038,15 @@ async def handle_get_detection_preview(sid, data):
     if slam_processor is None:
         return
 
-    submap_id = data.get("submap_id")
-    frame_idx = data.get("frame_idx")
-    query = data.get("query", "")
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        submap_id = int(data.get("submap_id"))
+        frame_idx = int(data.get("frame_idx"))
+    except Exception:
+        await sio.emit("detection_preview", {"error": "Invalid submap/frame"}, to=sid)
+        return
+    query = str(data.get("query", "")).strip()[:MAX_QUERY_LEN]
 
     try:
         submap = slam_processor.solver.map.get_submap(submap_id)
@@ -1142,6 +1226,29 @@ async def handle_get_agent_state(sid, data=None):
     await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
 
 
+@sio.on("agent_ui_result")
+async def handle_agent_ui_result(sid, data):
+    if not isinstance(data, dict):
+        return
+    cmd_id = str(data.get("id", "")).strip()
+    status = str(data.get("status", "")).strip().lower()
+    if not cmd_id or status not in {"ok", "error", "ignored", "timeout"}:
+        return
+
+    state = _ensure_session(sid)
+    result = {
+        "id": cmd_id,
+        "status": status,
+        "result": data.get("result"),
+        "error": data.get("error"),
+        "timestamp": time.time(),
+    }
+    with _sessions_lock:
+        state.ui_results.append(result)
+        if len(state.ui_results) > 128:
+            state.ui_results = state.ui_results[-128:]
+
+
 # ------------------------------
 # Background Streaming Task
 # ------------------------------
@@ -1159,6 +1266,42 @@ async def _broadcast_slam_update(result: dict[str, Any]):
         await sio.emit("slam_update", payload, to=sid)
 
 
+def _resolve_agent_submap_id(result: dict[str, Any]) -> Optional[int]:
+    if slam_processor is None:
+        return None
+
+    graph_map = slam_processor.solver.map
+    raw_submap_id = result.get("submap_id")
+    if raw_submap_id is not None:
+        try:
+            submap_id = int(raw_submap_id)
+            graph_map.get_submap(submap_id)
+            return submap_id
+        except Exception:
+            pass
+
+    candidates: list[Optional[int]] = []
+    try:
+        candidates.append(graph_map.get_largest_key(ignore_loop_closure_submaps=True))
+    except Exception:
+        candidates.append(None)
+    try:
+        candidates.append(graph_map.get_largest_key())
+    except Exception:
+        candidates.append(None)
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            graph_map.get_submap(candidate)
+            return int(candidate)
+        except Exception:
+            continue
+
+    return None
+
+
 def _schedule_agent_cycles_for_result(result: dict[str, Any]):
     with _sessions_lock:
         states = list(_sessions.values())
@@ -1166,13 +1309,12 @@ def _schedule_agent_cycles_for_result(result: dict[str, Any]):
     if not states:
         return
 
-    submap_id = result.get("submap_id")
+    submap_id = _resolve_agent_submap_id(result)
     if submap_id is None:
-        num_submaps = int(result.get("num_submaps", 0) or 0)
-        submap_id = max(0, num_submaps - 1)
+        return
 
     detections_all = result.get("detections", [])
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for state in states:
         if state.agent is None or not state.agent.enabled:

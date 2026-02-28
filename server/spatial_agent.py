@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -15,6 +16,12 @@ from typing import Any, Callable, Optional
 import cv2
 import numpy as np
 
+try:
+    from server.agent import AgentRuntime
+    from server.agent.schemas import ToolCall
+except Exception:  # pragma: no cover - optional dependency path
+    AgentRuntime = None
+    ToolCall = None
 from server.llm import OpenRouterClient
 
 
@@ -88,6 +95,12 @@ class SpatialAgent:
         self.query_update_cooldown_s = float(os.environ.get("SPATIAL_QUERY_COOLDOWN_S", "2.0"))
         self.cycle_min_interval_s = float(os.environ.get("SPATIAL_CYCLE_MIN_INTERVAL_S", "1.2"))
         self.auto_complete_submap_gap = int(os.environ.get("SPATIAL_AUTOCOMPLETE_GAP", "6"))
+        self.max_tool_calls_per_cycle = int(os.environ.get("SPATIAL_MAX_TOOL_CALLS_PER_CYCLE", "4"))
+        self.tool_timeout_s = float(os.environ.get("SPATIAL_TOOL_TIMEOUT_S", "10.0"))
+        self.runtime_v2_enabled = os.environ.get("AGENT_RUNTIME_V2_ENABLED", "1").strip().lower() not in {"0", "false", "off"}
+        if AgentRuntime is None:
+            self.runtime_v2_enabled = False
+            print("SpatialAgent runtime v2 disabled (missing optional dependencies)")
 
         # Scene understanding
         self.scene_description = ""
@@ -122,6 +135,14 @@ class SpatialAgent:
         # Thread safety
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=3)
+        self._runtime = None
+        if self.runtime_v2_enabled and AgentRuntime is not None:
+            self._runtime = AgentRuntime(
+                session_id=self.session_id,
+                streaming_slam=self.slam,
+                emit_event=self.emit,
+                max_workers=4,
+            )
 
     # ------------------------------------------------------------------
     # Entry point
@@ -295,6 +316,7 @@ class SpatialAgent:
             }
             for m in self.missions.values()
         ]
+        tools_schema = self._runtime.list_tools() if (self.runtime_v2_enabled and self._runtime is not None) else []
 
         system_prompt = (
             "You are the orchestrator for an autonomous spatial intelligence system. "
@@ -316,6 +338,7 @@ class SpatialAgent:
             f"- Scene analyzer: {json.dumps(scene_result) if scene_result else 'unavailable'}\n"
             f"- Object spotter: {json.dumps(spotter_result) if spotter_result else 'unavailable'}\n"
             f"- Layout mapper: {json.dumps(layout_result) if layout_result else 'not run'}\n"
+            f"- Available tools: {json.dumps(tools_schema)}\n"
             "\nReturn JSON exactly in this shape:\n"
             "{"
             "\"narrative\":\"1-3 concise sentences\"," 
@@ -324,7 +347,8 @@ class SpatialAgent:
             "\"new_missions\":[{\"category\":\"Category\",\"goal\":\"Goal\",\"queries\":[\"q1\",\"q2\"]}],"
             "\"complete_missions\":[1],"
             "\"add_queries_to_mission\":{\"2\":[\"q3\"]},"
-            "\"coverage_estimate\":0.0"
+            "\"coverage_estimate\":0.0,"
+            "\"tool_calls\":[{\"name\":\"tool_name\",\"args\":{}}]"
             "}"
         )
 
@@ -441,6 +465,10 @@ class SpatialAgent:
         if isinstance(cov, (int, float)):
             self._coverage_estimate = min(max(float(cov), 0.0), 1.0)
 
+        tool_calls = result.get("tool_calls", [])
+        if isinstance(tool_calls, list) and tool_calls:
+            self._execute_tool_calls(tool_calls)
+
         self._sync_detection_queries()
 
         self.scene_history.append(
@@ -452,6 +480,64 @@ class SpatialAgent:
             }
         )
         self.scene_history = self.scene_history[-20:]
+
+    def _execute_tool_calls(self, tool_calls: list[Any]):
+        if not self.runtime_v2_enabled or self._runtime is None:
+            return
+        executed = 0
+        for call in tool_calls:
+            if executed >= self.max_tool_calls_per_cycle:
+                break
+            if not isinstance(call, dict):
+                continue
+
+            if ToolCall is not None:
+                try:
+                    parsed = ToolCall.model_validate(call)
+                    tool_name = parsed.name
+                    tool_args = parsed.args
+                except Exception:
+                    continue
+            else:
+                tool_name = str(call.get("name", "")).strip()
+                tool_args = call.get("args", {})
+                if not tool_name or not isinstance(tool_args, dict):
+                    continue
+
+            result = self._runtime.execute_tool(
+                tool_name,
+                tool_args,
+                timeout_s=self.tool_timeout_s,
+            )
+            executed += 1
+
+            if not result.get("ok", False):
+                self._emit_thought(
+                    f"Tool failed: {tool_name}",
+                    thought_type="error",
+                    subagent="orchestrator",
+                )
+                continue
+
+            data = result.get("data", {})
+            if tool_name == "search_objects":
+                detections = data.get("detections", [])
+                if isinstance(detections, list) and detections:
+                    self._route_detections(detections)
+            elif tool_name == "locate_object_3d" and data.get("found"):
+                center = data.get("center")
+                query = data.get("query")
+                if isinstance(center, list) and len(center) == 3:
+                    self._runtime.execute_tool(
+                        "focus_detection_ui",
+                        {
+                            "query": query,
+                            "submap_id": data.get("matched_submap"),
+                            "frame_idx": data.get("matched_frame"),
+                            "center": center,
+                        },
+                        timeout_s=self.tool_timeout_s,
+                    )
 
     # ------------------------------------------------------------------
     # User interaction
@@ -496,7 +582,8 @@ class SpatialAgent:
             "\"response\":\"assistant reply\","
             "\"new_missions\":[{\"category\":\"...\",\"goal\":\"...\",\"queries\":[\"q1\"]}],"
             "\"remove_queries\":[\"q\"],"
-            "\"set_goal\":null"
+            "\"set_goal\":null,"
+            "\"tool_calls\":[{\"name\":\"tool_name\",\"args\":{}}]"
             "}"
         )
 
@@ -531,6 +618,10 @@ class SpatialAgent:
             set_goal = parsed.get("set_goal")
             if isinstance(set_goal, str) and set_goal.strip():
                 self.current_goal = set_goal.strip()
+
+            tool_calls = parsed.get("tool_calls", [])
+            if isinstance(tool_calls, list) and tool_calls:
+                self._execute_tool_calls(tool_calls)
 
             self._sync_detection_queries()
             self.chat_history.append({"role": "assistant", "content": reply})
@@ -695,6 +786,7 @@ class SpatialAgent:
             "coverage_estimate": min(max(self._coverage_estimate, 0.0), 1.0),
             "health": "degraded" if self.orchestrator_client.degraded_mode else "ok",
             "degraded_mode": self.orchestrator_client.degraded_mode,
+            "runtime_v2_enabled": self.runtime_v2_enabled,
         }
 
     def reset(self):
@@ -722,6 +814,15 @@ class SpatialAgent:
                 self.on_queries_changed(self.session_id, [])
             except Exception as e:
                 print(f"SpatialAgent[{self.session_id}] reset callback error: {e}")
+
+    def shutdown(self):
+        self.enabled = False
+        if self._runtime is not None:
+            try:
+                self._runtime.close()
+            except Exception:
+                pass
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
     # Emit helpers
@@ -832,24 +933,53 @@ class SpatialAgent:
 
     def _extract_keyframes_b64(self, submap_id: int) -> list[str]:
         try:
-            submap = self.slam.solver.map.get_submap(submap_id)
+            submap = None
+            graph_map = self.slam.solver.map
+            try:
+                submap = graph_map.get_submap(int(submap_id))
+            except Exception:
+                submap = None
             if submap is None:
-                submap = self.slam.solver.map.get_latest_submap()
+                try:
+                    submap = graph_map.get_latest_submap(ignore_loop_closure_submaps=True)
+                except Exception:
+                    submap = None
+            if submap is None:
+                try:
+                    submap = graph_map.get_latest_submap()
+                except Exception:
+                    submap = None
             if submap is None:
                 return []
 
-            num_frames = submap.get_num_frames()
+            all_frames = submap.get_all_frames()
+            if all_frames is None:
+                return []
+
+            num_frames = int(all_frames.shape[0]) if hasattr(all_frames, "shape") else len(all_frames)
             if num_frames <= 0:
                 return []
 
-            step = max(1, num_frames // self.max_keyframes_per_analysis)
-            indices = list(range(0, num_frames, step))[: self.max_keyframes_per_analysis]
+            target_keyframes = min(max(1, self.max_keyframes_per_analysis), num_frames)
+            if num_frames <= target_keyframes:
+                indices = list(range(num_frames))
+            else:
+                step = max(1, num_frames // target_keyframes)
+                indices = list(range(0, num_frames, step))[:target_keyframes]
+                if indices[-1] != num_frames - 1:
+                    indices[-1] = num_frames - 1
             keyframes: list[str] = []
 
             for idx in indices:
                 try:
                     frame_tensor = submap.get_frame_at_index(idx)
-                    frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                    frame_np = (
+                        frame_tensor.detach()
+                        .cpu()
+                        .permute(1, 2, 0)
+                        .numpy()
+                    )
+                    frame_np = np.clip(frame_np * 255.0, 0, 255).astype(np.uint8)
 
                     h, w = frame_np.shape[:2]
                     if w > 640:
@@ -861,8 +991,6 @@ class SpatialAgent:
                         ".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 72]
                     )
                     if ok:
-                        import base64
-
                         keyframes.append(base64.b64encode(jpeg_buf.tobytes()).decode("ascii"))
                 except Exception as e:
                     print(f"SpatialAgent[{self.session_id}] keyframe extraction error idx={idx}: {e}")

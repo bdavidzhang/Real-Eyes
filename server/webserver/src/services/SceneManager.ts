@@ -57,6 +57,8 @@ export class SceneManager {
   private detectionGroup: THREE.Group;
   private detectionBoxGroup: THREE.Group;
   private detectionLabelGroup: THREE.Group;
+  private waypointGroup: THREE.Group;
+  private pathGroup: THREE.Group;
   private gridHelper: THREE.GridHelper;
   private axesHelper: THREE.AxesHelper;
   private sceneRoot: THREE.Group;  // Parent group for 180° rotation
@@ -85,8 +87,10 @@ export class SceneManager {
   private submapBuffers = new Map<number, { pts: Float32Array; cols: Float32Array }>();
   private allCamPositions: number[][] = [];
   private allCamRotations: number[][][] = [];
+  private detectionCenters = new Map<string, [number, number, number]>();
 
   private animationId: number | null = null;
+  private readonly resizeHandler = () => this.onWindowResize();
 
   constructor(container: HTMLElement) {
     // Scene setup
@@ -166,9 +170,13 @@ export class SceneManager {
     this.detectionGroup.add(this.detectionBoxGroup);
     this.detectionGroup.add(this.detectionLabelGroup);
     this.sceneRoot.add(this.detectionGroup);
+    this.waypointGroup = new THREE.Group();
+    this.pathGroup = new THREE.Group();
+    this.sceneRoot.add(this.waypointGroup);
+    this.sceneRoot.add(this.pathGroup);
 
     // Handle window resize
-    window.addEventListener('resize', () => this.onWindowResize());
+    window.addEventListener('resize', this.resizeHandler);
 
     // Start animation loop
     this.animate();
@@ -533,6 +541,7 @@ export class SceneManager {
   updateDetections(detections: DetectionResult[]): void {
     // Dispose old bounding boxes
     this.clearDetectionGroup();
+    this.detectionCenters.clear();
 
     if (!detections || detections.length === 0) return;
 
@@ -550,6 +559,11 @@ export class SceneManager {
       if (!det.success || !det.bounding_box) continue;
       const bb = det.bounding_box;
       if (!bb.center || !bb.extent || !bb.rotation) continue;
+      this.detectionCenters.set(det.query.toLowerCase(), [
+        Number(bb.center[0]),
+        Number(bb.center[1]),
+        Number(bb.center[2]),
+      ]);
 
       const color = queryColors.get(det.query) || new THREE.Color(0xffffff);
 
@@ -592,6 +606,89 @@ export class SceneManager {
         group.remove(child);
       }
     }
+  }
+
+  focusOnPoint(position: [number, number, number], distance = 2.5): void {
+    const target = new THREE.Vector3(position[0], position[1], position[2]);
+    const currentDir = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
+    if (currentDir.lengthSq() < 1e-6) {
+      currentDir.set(1, 0.6, 1);
+    }
+    currentDir.normalize().multiplyScalar(distance);
+    this.controls.target.copy(target);
+    this.camera.position.copy(target.clone().add(currentDir));
+    this.controls.update();
+  }
+
+  focusOnDetectionQuery(query: string): boolean {
+    const center = this.detectionCenters.get(query.toLowerCase());
+    if (!center) return false;
+    this.focusOnPoint(center, 2.5);
+    return true;
+  }
+
+  showWaypoint(waypointId: string, position: [number, number, number], label?: string): void {
+    const existing = this.waypointGroup.getObjectByName(waypointId);
+    if (existing) {
+      this.waypointGroup.remove(existing);
+    }
+
+    const group = new THREE.Group();
+    group.name = waypointId;
+    group.position.set(position[0], position[1], position[2]);
+
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.08, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x3ce8a3, opacity: 0.9, transparent: true }),
+    );
+    group.add(marker);
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.12, 0.15, 20),
+      new THREE.MeshBasicMaterial({
+        color: 0x3ce8a3,
+        opacity: 0.35,
+        transparent: true,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    group.add(ring);
+
+    if (label) {
+      const sprite = this.createLabelSprite(label, new THREE.Color(0x3ce8a3));
+      sprite.position.set(0, 0.18, 0);
+      sprite.scale.set(0.6, 0.16, 1);
+      group.add(sprite);
+    }
+
+    this.waypointGroup.add(group);
+  }
+
+  showPath(points: Array<[number, number, number]>, pathId = 'agent-path'): void {
+    const existing = this.pathGroup.getObjectByName(pathId);
+    if (existing) {
+      this.pathGroup.remove(existing);
+      if ((existing as THREE.Line).geometry) {
+        (existing as THREE.Line).geometry.dispose();
+      }
+      const mat = (existing as THREE.Line).material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    }
+
+    if (!points.length) return;
+    const vectors = points.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
+    const geometry = new THREE.BufferGeometry().setFromPoints(vectors);
+    const material = new THREE.LineBasicMaterial({
+      color: 0xf2c14e,
+      opacity: 0.85,
+      transparent: true,
+      linewidth: 2,
+    });
+    const line = new THREE.Line(geometry, material);
+    line.name = pathId;
+    this.pathGroup.add(line);
   }
 
   private createOBBWireframe(bb: { center: number[]; extent: number[]; rotation: number[][] }, color: THREE.Color): THREE.LineSegments {
@@ -700,6 +797,19 @@ export class SceneManager {
 
     // Clear beacons
     this.updateBeacons([]);
+    this.detectionCenters.clear();
+    for (const group of [this.waypointGroup, this.pathGroup]) {
+      while (group.children.length > 0) {
+        const child = group.children[0];
+        if ('geometry' in child) (child as any).geometry?.dispose();
+        if ('material' in child) {
+          const mat = (child as any).material;
+          if (Array.isArray(mat)) mat.forEach((m: THREE.Material) => m.dispose());
+          else mat?.dispose();
+        }
+        group.remove(child);
+      }
+    }
 
     console.log('🗑️  Scene cleared');
   }
@@ -777,7 +887,7 @@ export class SceneManager {
     this.renderer.dispose();
     this.controls.dispose();
 
-    window.removeEventListener('resize', () => this.onWindowResize());
+    window.removeEventListener('resize', this.resizeHandler);
   }
 
   /**

@@ -449,8 +449,7 @@ button.icon {
 .notification {
   position: fixed;
   bottom: 100px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 24px;
   padding: 14px 24px;
   border-radius: var(--border-radius);
   font-size: 13px;
@@ -459,6 +458,8 @@ button.icon {
   animation: slideUp 0.25s ease;
   backdrop-filter: blur(40px);
   letter-spacing: -0.01em;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
 }
 
 .notification-info {
@@ -510,11 +511,11 @@ button.icon {
 
 @keyframes slideUp {
   from {
-    transform: translateX(-50%) translateY(20px);
+    transform: translateY(20px);
     opacity: 0;
   }
   to {
-    transform: translateX(-50%) translateY(0);
+    transform: translateY(0);
     opacity: 1;
   }
 }
@@ -904,4 +905,3 @@ button.icon {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
 }
-

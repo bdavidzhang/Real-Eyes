@@ -74,9 +74,32 @@ class OpenRouterClient:
         if match:
             return match.group(1)
 
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return match.group(0)
+        start = text.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
 
         return None
 
@@ -222,3 +245,23 @@ class OpenRouterClient:
         if not isinstance(parsed, dict):
             raise RuntimeError("Expected top-level JSON object from LLM response")
         return parsed, response
+
+    def chat_json_model(
+        self,
+        model_cls,
+        system_prompt: str,
+        user_prompt: str,
+        history: Optional[list[dict[str, Any]]] = None,
+        images_b64: Optional[list[str]] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 768,
+    ):
+        parsed, response = self.chat_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            history=history,
+            images_b64=images_b64,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return model_cls.model_validate(parsed), response

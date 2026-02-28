@@ -4,16 +4,28 @@ import type {
   AgentFinding,
   AgentState,
   AgentThought,
+  AgentToolEvent,
+  AgentUICommand,
+  AgentUIResult,
   MissionState,
 } from '../types';
+
+type FeedCategory = 'thought' | 'action' | 'finding' | 'tool' | 'ui';
 
 interface FeedEntryOptions {
   id: string;
   className: string;
   label: string;
   content: string;
+  category: FeedCategory;
   meta?: string;
-  typewriter?: boolean;
+  details?: unknown;
+}
+
+interface FeedEntryRecord {
+  id: string;
+  category: FeedCategory;
+  el: HTMLElement;
 }
 
 interface ContextSnapshot {
@@ -41,19 +53,47 @@ export class AgentPanel {
   private submapsEl: HTMLElement;
   private queryCountEl: HTMLElement;
   private healthPill: HTMLElement;
+
+  private feedPauseBtn: HTMLButtonElement;
+  private feedClearBtn: HTMLButtonElement;
+  private pausedBadge: HTMLElement;
+  private filterButtons = new Map<FeedCategory, HTMLButtonElement>();
+  private filterCounts = new Map<FeedCategory, HTMLElement>();
+
   private agentEnabled = true;
+  private feedPaused = false;
 
   // Callbacks
   private onSendChat?: (message: string) => void;
   private onToggle?: (enabled: boolean) => void;
 
   // Timeline state (keep last N)
-  private entries: { id: string; el: HTMLElement }[] = [];
-  private maxEntries = 80;
+  private entries: FeedEntryRecord[] = [];
+  private seenEntryIds = new Set<string>();
+  private pendingEntries: FeedEntryOptions[] = [];
+  private pausedEntries: FeedEntryOptions[] = [];
+  private renderScheduled = false;
+  private maxEntries = 120;
 
   // Context image state (keep recent snapshots)
   private snapshots: ContextSnapshot[] = [];
   private maxSnapshots = 8;
+
+  private enabledCategories = new Set<FeedCategory>([
+    'thought',
+    'action',
+    'finding',
+    'tool',
+    'ui',
+  ]);
+
+  private categoryTotals: Record<FeedCategory, number> = {
+    thought: 0,
+    action: 0,
+    finding: 0,
+    tool: 0,
+    ui: 0,
+  };
 
   constructor() {
     this.panel = document.getElementById('agent-panel')!;
@@ -70,7 +110,41 @@ export class AgentPanel {
     this.queryCountEl = document.getElementById('agent-query-count')!;
     this.healthPill = document.getElementById('agent-health-pill')!;
 
+    this.feedPauseBtn = document.getElementById('agent-feed-pause') as HTMLButtonElement;
+    this.feedClearBtn = document.getElementById('agent-feed-clear') as HTMLButtonElement;
+    this.pausedBadge = document.getElementById('agent-feed-paused')!;
+
+    this.initializeFeedFilters();
     this.setupListeners();
+    this.renderFeedCounts();
+    this.renderPausedBadge();
+  }
+
+  private initializeFeedFilters(): void {
+    const filterButtons = this.panel.querySelectorAll<HTMLButtonElement>('.agent-feed-filter');
+    for (const btn of filterButtons) {
+      const category = btn.dataset.category as FeedCategory | undefined;
+      if (!category || !(category in this.categoryTotals)) {
+        continue;
+      }
+      this.filterButtons.set(category, btn);
+      btn.classList.toggle('active', this.enabledCategories.has(category));
+
+      const countEl = btn.querySelector<HTMLElement>('.agent-feed-filter-count');
+      if (countEl) {
+        this.filterCounts.set(category, countEl);
+      }
+
+      btn.addEventListener('click', () => {
+        if (this.enabledCategories.has(category)) {
+          this.enabledCategories.delete(category);
+        } else {
+          this.enabledCategories.add(category);
+        }
+        btn.classList.toggle('active', this.enabledCategories.has(category));
+        this.applyFilters();
+      });
+    }
   }
 
   private setupListeners(): void {
@@ -87,18 +161,51 @@ export class AgentPanel {
       this.renderToggleState();
       this.onToggle?.(this.agentEnabled);
     });
+
+    this.feedPauseBtn.addEventListener('click', () => {
+      this.feedPaused = !this.feedPaused;
+      this.feedPauseBtn.textContent = this.feedPaused ? 'Resume' : 'Pause';
+      this.feedPauseBtn.classList.toggle('active', this.feedPaused);
+
+      if (!this.feedPaused && this.pausedEntries.length > 0) {
+        this.pendingEntries.push(...this.pausedEntries);
+        this.pausedEntries = [];
+        this.scheduleRender();
+      }
+      this.renderPausedBadge();
+    });
+
+    this.feedClearBtn.addEventListener('click', () => {
+      this.entries = [];
+      this.pendingEntries = [];
+      this.pausedEntries = [];
+      this.seenEntryIds.clear();
+      this.categoryTotals = {
+        thought: 0,
+        action: 0,
+        finding: 0,
+        tool: 0,
+        ui: 0,
+      };
+      this.activityFeed.innerHTML = '';
+      this.renderFeedCounts();
+      this.renderPausedBadge();
+    });
   }
 
   private sendChat(): void {
     const msg = this.chatInput.value.trim();
     if (!msg) return;
-    this.addEntry({
-      id: 'user-' + Date.now(),
+
+    this.enqueueEntry({
+      id: `user-${Date.now()}`,
       className: 'agent-entry-user',
       label: 'User',
       content: msg,
+      category: 'ui',
       meta: 'chat',
     });
+
     this.onSendChat?.(msg);
     this.chatInput.value = '';
   }
@@ -122,13 +229,14 @@ export class AgentPanel {
       metaParts.push(`${Math.round(data.confidence * 100)}%`);
     }
 
-    this.addEntry({
+    this.enqueueEntry({
       id: data.id,
       className: `agent-entry-${data.type}`,
-      label: labelMap[data.type] || 'Event',
+      label: labelMap[data.type] || 'Thought',
       content: data.content,
+      category: 'thought',
       meta: metaParts.join(' · '),
-      typewriter: data.type === 'chat_response',
+      details: data,
     });
 
     if (data.keyframe_b64) {
@@ -141,11 +249,13 @@ export class AgentPanel {
   }
 
   handleAction(data: AgentAction): void {
-    this.addEntry({
+    this.enqueueEntry({
       id: data.id,
       className: 'agent-entry-action',
       label: this.humanizeAction(data.action),
       content: data.details,
+      category: 'action',
+      details: data,
     });
 
     if (Array.isArray(data.queries)) {
@@ -158,12 +268,66 @@ export class AgentPanel {
     metaParts.push(`confidence ${Math.round(data.confidence * 100)}%`);
     if (data.mission_id != null) metaParts.push(`mission ${data.mission_id}`);
 
-    this.addEntry({
+    this.enqueueEntry({
       id: data.id,
       className: 'agent-entry-finding',
       label: 'Finding',
       content: data.description,
+      category: 'finding',
       meta: metaParts.join(' · '),
+      details: data,
+    });
+  }
+
+  handleToolEvent(data: AgentToolEvent): void {
+    const statusLabel = data.status.toUpperCase();
+    const latency = typeof data.latency_ms === 'number' ? `${data.latency_ms}ms` : '';
+    const meta = [statusLabel, latency].filter(Boolean).join(' · ');
+
+    this.enqueueEntry({
+      id: `tool-${data.id}-${data.status}`,
+      className: `agent-entry-tool agent-entry-tool-${data.status}`,
+      label: `Tool · ${data.tool}`,
+      content: data.status === 'failed'
+        ? data.error || 'Tool call failed'
+        : `${data.tool} ${data.status}`,
+      category: 'tool',
+      meta,
+      details: {
+        args: data.args,
+        result: data.result,
+        error: data.error,
+      },
+    });
+  }
+
+  handleUICommand(data: AgentUICommand): void {
+    const missionMeta = data.mission_id != null ? `mission ${data.mission_id}` : 'ui';
+    this.enqueueEntry({
+      id: `ui-cmd-${data.id}`,
+      className: 'agent-entry-ui',
+      label: 'UI Command',
+      content: data.name,
+      category: 'ui',
+      meta: missionMeta,
+      details: data.args,
+    });
+  }
+
+  handleUIResult(result: AgentUIResult, commandName?: string): void {
+    const label = commandName ? `UI Result · ${commandName}` : 'UI Result';
+    const content = result.status === 'ok'
+      ? 'Command applied'
+      : result.error || 'Command did not apply';
+
+    this.enqueueEntry({
+      id: `ui-result-${result.id}-${result.status}`,
+      className: `agent-entry-ui agent-entry-ui-${result.status}`,
+      label,
+      content,
+      category: 'ui',
+      meta: result.status,
+      details: result.result ?? result.error,
     });
   }
 
@@ -189,7 +353,74 @@ export class AgentPanel {
   // Timeline
   // ------------------------------------------------------------------
 
-  private addEntry(opts: FeedEntryOptions): void {
+  private enqueueEntry(opts: FeedEntryOptions): void {
+    if (!opts.id) {
+      return;
+    }
+    if (this.seenEntryIds.has(opts.id)) {
+      return;
+    }
+
+    this.seenEntryIds.add(opts.id);
+    this.categoryTotals[opts.category] += 1;
+    this.renderFeedCounts();
+
+    if (this.feedPaused) {
+      this.pausedEntries.push(opts);
+      this.renderPausedBadge();
+      return;
+    }
+
+    this.pendingEntries.push(opts);
+    this.scheduleRender();
+  }
+
+  private scheduleRender(): void {
+    if (this.renderScheduled) {
+      return;
+    }
+    this.renderScheduled = true;
+
+    requestAnimationFrame(() => {
+      this.renderScheduled = false;
+      this.flushPendingEntries();
+    });
+  }
+
+  private flushPendingEntries(): void {
+    if (!this.pendingEntries.length) {
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const entry of this.pendingEntries) {
+      const el = this.createEntryElement(entry);
+      fragment.appendChild(el);
+      this.entries.push({
+        id: entry.id,
+        category: entry.category,
+        el,
+      });
+    }
+
+    this.pendingEntries = [];
+    this.activityFeed.appendChild(fragment);
+
+    while (this.entries.length > this.maxEntries) {
+      const old = this.entries.shift();
+      if (!old) {
+        continue;
+      }
+      this.seenEntryIds.delete(old.id);
+      old.el.remove();
+    }
+
+    this.applyFilters();
+    this.activityFeed.scrollTop = this.activityFeed.scrollHeight;
+    this.renderPausedBadge();
+  }
+
+  private createEntryElement(opts: FeedEntryOptions): HTMLElement {
     const el = document.createElement('article');
     el.className = `agent-entry ${opts.className}`;
     el.dataset.entryId = opts.id;
@@ -211,36 +442,61 @@ export class AgentPanel {
 
     const body = document.createElement('p');
     body.className = 'agent-entry-content';
+    body.textContent = opts.content;
     el.appendChild(body);
 
-    this.activityFeed.appendChild(el);
+    if (opts.details !== undefined) {
+      const details = document.createElement('details');
+      details.className = 'agent-entry-details';
 
-    if (opts.typewriter && opts.content.length > 0) {
-      this.typewrite(body, opts.content);
-    } else {
-      body.textContent = opts.content;
+      const summary = document.createElement('summary');
+      summary.textContent = 'details';
+      details.appendChild(summary);
+
+      const pre = document.createElement('pre');
+      pre.textContent = this.formatDetails(opts.details);
+      details.appendChild(pre);
+
+      el.appendChild(details);
     }
 
-    this.entries.push({ id: opts.id, el });
-    while (this.entries.length > this.maxEntries) {
-      const old = this.entries.shift();
-      old?.el.remove();
-    }
-
-    this.activityFeed.scrollTop = this.activityFeed.scrollHeight;
+    return el;
   }
 
-  private typewrite(el: HTMLElement, text: string): void {
-    let i = 0;
-    const interval = setInterval(() => {
-      if (i < text.length) {
-        el.textContent += text[i];
-        i++;
-        this.activityFeed.scrollTop = this.activityFeed.scrollHeight;
-      } else {
-        clearInterval(interval);
-      }
-    }, 12);
+  private formatDetails(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private renderFeedCounts(): void {
+    for (const [category, countEl] of this.filterCounts) {
+      countEl.textContent = String(this.categoryTotals[category]);
+    }
+  }
+
+  private renderPausedBadge(): void {
+    const count = this.pausedEntries.length;
+    if (!this.feedPaused || count === 0) {
+      this.pausedBadge.classList.add('is-hidden');
+      this.pausedBadge.textContent = '';
+      return;
+    }
+
+    this.pausedBadge.classList.remove('is-hidden');
+    this.pausedBadge.textContent = `Paused · ${count} buffered`;
+  }
+
+  private applyFilters(): void {
+    for (const entry of this.entries) {
+      const visible = this.enabledCategories.has(entry.category);
+      entry.el.classList.toggle('entry-hidden', !visible);
+    }
   }
 
   // ------------------------------------------------------------------

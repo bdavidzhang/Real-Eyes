@@ -180,10 +180,42 @@ export interface AgentState {
   coverage_estimate: number;
   health?: 'ok' | 'degraded' | 'disabled';
   degraded_mode?: boolean;
+  runtime_v2_enabled?: boolean;
 }
 
 export interface AgentAttachment {
   kind: 'keyframe' | 'mask' | 'other';
   image_b64?: string;
   label?: string;
+}
+
+export interface AgentUICommand {
+  id: string;
+  name:
+    | 'focus_detection'
+    | 'set_detection_queries'
+    | 'show_waypoint'
+    | 'show_path'
+    | 'show_toast'
+    | 'open_detection_preview';
+  args: Record<string, unknown>;
+  mission_id?: number;
+  ttl_ms?: number;
+}
+
+export interface AgentUIResult {
+  id: string;
+  status: 'ok' | 'error' | 'ignored' | 'timeout';
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface AgentToolEvent {
+  id: string;
+  tool: string;
+  status: 'started' | 'succeeded' | 'failed';
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string;
+  latency_ms?: number;
 }

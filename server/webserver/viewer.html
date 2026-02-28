@@ -215,6 +215,30 @@
       <div class="agent-columns">
         <section class="agent-column">
           <div class="agent-section-header">Timeline</div>
+          <div class="agent-feed-toolbar">
+            <div class="agent-feed-filters">
+              <button class="agent-feed-filter active" data-category="thought">
+                Thoughts <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="action">
+                Actions <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="finding">
+                Findings <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="tool">
+                Tools <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="ui">
+                UI <span class="agent-feed-filter-count">0</span>
+              </button>
+            </div>
+            <div class="agent-feed-actions">
+              <button id="agent-feed-pause" class="agent-feed-action">Pause</button>
+              <button id="agent-feed-clear" class="agent-feed-action">Clear</button>
+            </div>
+          </div>
+          <div id="agent-feed-paused" class="agent-feed-paused is-hidden"></div>
           <div id="agent-activity-feed"></div>
         </section>
 
