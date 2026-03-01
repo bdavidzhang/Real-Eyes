@@ -716,6 +716,188 @@ def stop_demo():
 # Lazy-initialized OpenRouter client for the /api/plan route
 _plan_client = None
 
+_PLAN_STOPWORDS = {
+    "i",
+    "a",
+    "an",
+    "the",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "and",
+    "or",
+    "my",
+    "me",
+    "we",
+    "is",
+    "are",
+    "was",
+    "want",
+    "need",
+    "track",
+    "find",
+    "locate",
+    "detect",
+    "identify",
+    "watch",
+    "follow",
+    "using",
+    "with",
+    "this",
+    "that",
+    "please",
+    "help",
+    "looking",
+    "look",
+    "search",
+    "explore",
+    "navigate",
+    "moving",
+    "move",
+    "walk",
+    "walking",
+    "around",
+    "inside",
+    "outside",
+    "toward",
+    "towards",
+    "front",
+    "back",
+    "left",
+    "right",
+    "from",
+    "into",
+    "through",
+    "near",
+    "scene",
+    "room",
+    "area",
+    "object",
+    "objects",
+    "item",
+    "items",
+    "stuff",
+    "things",
+    "video",
+    "camera",
+    "demo",
+    "live",
+}
+
+_GENERIC_OBJECT_WORDS = {
+    "object",
+    "objects",
+    "item",
+    "items",
+    "thing",
+    "things",
+    "target",
+    "targets",
+}
+
+_PLAN_OBJECT_HINTS: list[tuple[set[str], list[str]]] = [
+    ({"office", "workspace", "desk"}, ["chair", "table", "laptop", "monitor", "keyboard", "bottle"]),
+    ({"classroom", "school"}, ["chair", "desk", "backpack", "laptop", "whiteboard"]),
+    ({"kitchen"}, ["refrigerator", "microwave", "sink", "cup", "bottle"]),
+    ({"living", "livingroom", "sofa"}, ["couch", "coffee table", "tv", "lamp", "remote"]),
+    ({"hallway", "corridor"}, ["door", "sign", "chair", "trash can"]),
+    ({"garage", "workshop"}, ["toolbox", "drill", "ladder", "box"]),
+    ({"crime", "evidence"}, ["phone", "wallet", "bag", "bottle"]),
+    ({"disaster", "rescue"}, ["person", "backpack", "bottle", "helmet"]),
+]
+
+_PLAN_DEFAULT_OBJECTS = [
+    "person",
+    "chair",
+    "table",
+    "bottle",
+    "backpack",
+    "door",
+]
+
+
+def _clean_plan_object_name(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9\s\-]", " ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > 36:
+        cleaned = cleaned[:36].strip()
+    return cleaned
+
+
+def _extract_prompt_object_candidates(prompt: str) -> list[str]:
+    text = str(prompt or "").lower()
+    words = re.findall(r"[a-z][a-z0-9\-]{1,}", text)
+    word_set = set(words)
+    candidates: list[str] = []
+
+    def add(name: str):
+        obj = _clean_plan_object_name(name)
+        if not obj or obj in candidates:
+            return
+        if obj in _PLAN_STOPWORDS or obj in _GENERIC_OBJECT_WORDS:
+            return
+        candidates.append(obj)
+
+    # Domain hints improve relevance for common scene types.
+    for keys, objs in _PLAN_OBJECT_HINTS:
+        if keys & word_set:
+            for obj in objs:
+                add(obj)
+
+    # Lightweight keyword extraction from prompt text.
+    for word in words:
+        if word in _PLAN_STOPWORDS or word in _GENERIC_OBJECT_WORDS:
+            continue
+        if len(word) < 3 or len(word) > 24:
+            continue
+        add(word)
+
+    return candidates
+
+
+def _finalize_plan_objects(
+    llm_objects: Any,
+    prompt: str,
+    min_count: int = 5,
+    max_count: int = 8,
+) -> list[str]:
+    merged: list[str] = []
+
+    def add(value: Any):
+        obj = _clean_plan_object_name(value)
+        if not obj:
+            return
+        if obj in _PLAN_STOPWORDS or obj in _GENERIC_OBJECT_WORDS:
+            return
+        if obj not in merged:
+            merged.append(obj)
+
+    if isinstance(llm_objects, str):
+        for part in re.split(r"[,;]\s*", llm_objects):
+            add(part)
+    elif isinstance(llm_objects, list):
+        for item in llm_objects:
+            add(item)
+
+    for candidate in _extract_prompt_object_candidates(prompt):
+        add(candidate)
+
+    for fallback in _PLAN_DEFAULT_OBJECTS:
+        add(fallback)
+
+    if len(merged) < min_count:
+        for fallback in ["phone", "bag", "laptop", "cup"]:
+            add(fallback)
+            if len(merged) >= min_count:
+                break
+
+    return merged[:max_count]
+
 def _get_plan_client() -> OpenRouterClient:
     global _plan_client
     if _plan_client is None:
@@ -774,10 +956,11 @@ def generate_plan():
         user_prompt = (
             f'Given this scenario: "{prompt}"\n'
             "Return JSON with exact keys: "
-            '{"objects": ["obj1", "obj2"], '
+            '{"objects": ["obj1", "obj2", "obj3", "obj4", "obj5"], '
             '"waypoints_justification": "1-2 sentences", '
             '"pathfinding_justification": "1-2 sentences"}. '
-            "Objects must be concrete physical items trackable in 3D space."
+            "Objects must be concrete physical items trackable in 3D space. "
+            "Return 5-8 unique objects, prioritized by relevance."
         )
         result, _ = client.chat_json(
             system_prompt=system_prompt,
@@ -785,75 +968,32 @@ def generate_plan():
             temperature=0.2,
             max_tokens=256,
         )
+        finalized_objects = _finalize_plan_objects(result.get("objects", []), prompt)
 
-        return _plan_response_from_result(result)
-    except Exception as e:
-        print(f"Plan generation error: {e}; trying Gemini fallback")
-
-        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if gemini_api_key:
-            try:
-                from google import genai
-
-                gemini_model = os.environ.get("GEMINI_PLAN_MODEL", "gemini-3-flash-preview")
-                client = genai.Client(api_key=gemini_api_key)
-                response = client.models.generate_content(
-                    model=gemini_model,
-                    contents=(
-                    f'Given this scenario: "{prompt}"\n'
-                    "Return JSON with exact keys: "
-                    '{"objects": ["obj1", "obj2"], '
-                    '"waypoints_justification": "1-2 sentences", '
-                    '"pathfinding_justification": "1-2 sentences"}. '
-                    "Objects must be concrete physical items trackable in 3D space. "
-                    "Return only JSON."
-                    ),
-                )
-                content = response.text if response and response.text else ""
-                match = re.search(r"\{[\s\S]*\}", content)
-                if not match:
-                    raise ValueError("Gemini returned no JSON object")
-                result = json.loads(match.group())
-                return _plan_response_from_result(result)
-            except Exception as ge:
-                print(f"Gemini fallback error: {ge}; falling back to keyword extraction")
-        else:
-            print("Gemini fallback unavailable: GEMINI_API_KEY not set")
-
-        print("Falling back to keyword extraction")
-        stopwords = {
-            "i",
-            "a",
-            "an",
-            "the",
-            "in",
-            "on",
-            "at",
-            "to",
-            "for",
-            "and",
-            "or",
-            "my",
-            "me",
-            "we",
-            "is",
-            "are",
-            "was",
-            "want",
-            "need",
-            "track",
-            "find",
-            "locate",
-            "using",
-            "with",
-            "this",
-            "that",
-        }
-        words = [w.strip(".,!?") for w in prompt.lower().split()]
-        objects = list(dict.fromkeys([w for w in words if w and w not in stopwords]))[:5]
         return jsonify(
             {
-                "objects": objects or ["object"],
+                "objects": finalized_objects,
+                "waypoints": {
+                    "enabled": True,
+                    "justification": result.get(
+                        "waypoints_justification", "Waypoints mark key locations."
+                    ),
+                },
+                "pathfinding": {
+                    "enabled": True,
+                    "justification": result.get(
+                        "pathfinding_justification",
+                        "Pathfinding visualizes your traversed route.",
+                    ),
+                },
+            }
+        )
+    except Exception as e:
+        print(f"Plan generation error: {e}; falling back to keyword extraction")
+        objects = _finalize_plan_objects([], prompt)
+        return jsonify(
+            {
+                "objects": objects,
                 "waypoints": {
                     "enabled": True,
                     "justification": "Waypoints help mark key locations.",

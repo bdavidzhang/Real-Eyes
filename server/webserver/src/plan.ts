@@ -6,10 +6,27 @@ import './styles/plan.css';
 
 type TrackingSource = 'live' | 'demo';
 
-let currentPlan: TrackingPlan | null = null;
 let selectedObjects: Set<string> = new Set();
 let trackingSource: TrackingSource = 'live';
 let selectedDemoVideoId: string | null = null;
+let loadingLineTimer: number | null = null;
+
+const LOADING_LINES = [
+  'Calibrating scene intelligence...',
+  'Stack-ranking likely targets...',
+  'Tuning object filters for zero-noise lock...',
+  'Preparing high-confidence pursuit profile...',
+];
+
+const AGENT_LINES = [
+  'I chase signal, not noise. Give me targets and I will hunt.',
+  'Mission feed is live. Every frame is evidence.',
+  'Target confidence is dynamic. I adapt before the scene does.',
+  'No blind spots. No drift. Just tracked reality.',
+  'You choose the objective. I execute the sweep.',
+];
+
+const PLAN_FALLBACK_OBJECTS = ['person', 'chair', 'table', 'bottle', 'backpack', 'door'];
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Plan page loaded');
@@ -17,12 +34,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Initialize background mesh animation
   const bgCanvas = document.getElementById('meshBg') as HTMLCanvasElement;
   if (bgCanvas) initMeshBackground(bgCanvas);
+  setupAgentVoice();
 
   const params = new URLSearchParams(window.location.search);
   const prompt = params.get('prompt');
   sessionStorage.setItem('userPrompt', prompt ?? '');
   trackingSource = params.get('mode') === 'demo' ? 'demo' : 'live';
   selectedDemoVideoId = params.get('video_id');
+  setupCameraQr();
 
   if (!prompt) {
     showError();
@@ -37,16 +56,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const objects = await DedalusAPI.extractObjects(prompt);
     console.log('Extracted objects:', objects);
 
-    // Step 2: Generate plan with justifications
+    // Step 2: Generate plan
     const plan = await DedalusAPI.generatePlan(prompt, objects);
     console.log('Generated plan:', plan);
 
     // if the word DEMO is in the prompt, hardcode the objects to be "chair", "brick", "table"
     if (prompt.toUpperCase().includes('DEMO')) {
-      plan.objects = ['chair', 'brick', 'table', 'bottle'];
+      plan.objects = ['chair', 'brick', 'table', 'bottle', 'backpack', 'door'];
     }
+    plan.objects = ensureMinimumObjects(plan.objects, 5);
 
-    currentPlan = plan;
     selectedObjects = new Set(plan.objects);
 
     // Step 3: Display plan
@@ -61,12 +80,19 @@ function showLoading(): void {
   document.getElementById('loadingState')!.style.display = 'flex';
   document.getElementById('planContent')!.style.display = 'none';
   document.getElementById('errorState')!.style.display = 'none';
+
+  const loadingLineEl = document.getElementById('loadingLine');
+  if (loadingLineEl && loadingLineTimer === null) {
+    loadingLineTimer = rotateLines(loadingLineEl, LOADING_LINES, 1700);
+  }
 }
 
 function showError(): void {
+  stopLoadingLineRotation();
   document.getElementById('loadingState')!.style.display = 'none';
   document.getElementById('planContent')!.style.display = 'none';
   document.getElementById('errorState')!.style.display = 'flex';
+  setAgentLine('Signal interrupted. Re-run mission compile and I will recover.');
 
   document.getElementById('retryBtn')?.addEventListener('click', () => {
     window.location.reload();
@@ -74,15 +100,13 @@ function showError(): void {
 }
 
 function displayPlan(plan: TrackingPlan): void {
+  stopLoadingLineRotation();
   document.getElementById('loadingState')!.style.display = 'none';
   document.getElementById('planContent')!.style.display = 'block';
 
-  // Render objects with checkboxes
+  // Render selected objects
   renderObjects(plan.objects);
-
-  // Render justifications
-  document.getElementById('waypointsJustification')!.textContent = plan.waypoints.justification;
-  document.getElementById('pathfindingJustification')!.textContent = plan.pathfinding.justification;
+  setAgentLine(buildLaunchLine(plan.objects));
 
   // Setup event handlers
   setupAddObjectHandler();
@@ -154,3 +178,86 @@ function setupConfirmHandler(): void {
   });
 }
 
+function setupAgentVoice(): void {
+  const agentLineEl = document.getElementById('agentLine');
+  if (!agentLineEl) return;
+  setAgentLine(AGENT_LINES[0]);
+  rotateLines(agentLineEl, AGENT_LINES, 4200);
+}
+
+function rotateLines(el: HTMLElement, lines: string[], intervalMs: number): number {
+  let index = Math.floor(Math.random() * lines.length);
+  el.textContent = lines[index];
+  return window.setInterval(() => {
+    index = (index + 1) % lines.length;
+    el.textContent = lines[index];
+  }, intervalMs);
+}
+
+function stopLoadingLineRotation(): void {
+  if (loadingLineTimer !== null) {
+    window.clearInterval(loadingLineTimer);
+    loadingLineTimer = null;
+  }
+}
+
+function setAgentLine(message: string): void {
+  const el = document.getElementById('agentLine');
+  if (el) el.textContent = message;
+}
+
+function buildLaunchLine(objects: string[]): string {
+  if (objects.length === 0) return 'No targets locked yet. Add objects and I will spin up the sweep.';
+  if (objects.length === 1) return `Target locked: ${objects[0]}. I am ready to track.`;
+  if (objects.length === 2) return `Targets locked: ${objects[0]} + ${objects[1]}. Ready to execute.`;
+  return `Targets locked: ${objects[0]} + ${objects[1]}. ${objects.length - 2} more queued.`;
+}
+
+function setupCameraQr(): void {
+  const qrImage = document.getElementById('cameraQrImage') as HTMLImageElement | null;
+  const cameraLink = document.getElementById('cameraPageLink') as HTMLAnchorElement | null;
+  const hint = document.getElementById('cameraQrHint');
+  if (!qrImage || !cameraLink || !hint) return;
+
+  const cameraUrl = buildCameraUrl();
+  const cameraUrlText = cameraUrl.toString();
+  const qrSrc = `https://quickchart.io/qr?size=300&margin=2&ecLevel=M&text=${encodeURIComponent(cameraUrlText)}`;
+
+  qrImage.src = qrSrc;
+  qrImage.loading = 'lazy';
+  cameraLink.href = cameraUrlText;
+  cameraLink.textContent = cameraUrlText;
+
+  if (cameraUrl.hostname === 'localhost' || cameraUrl.hostname === '127.0.0.1' || cameraUrl.hostname === '::1') {
+    hint.textContent = 'This link uses localhost. Replace it with your laptop LAN IP if your phone cannot reach it.';
+    return;
+  }
+
+  hint.textContent = 'If scan fails, open the link directly on your phone browser.';
+}
+
+function buildCameraUrl(): URL {
+  const url = new URL('/sender.html', window.location.origin);
+  if (trackingSource === 'demo') {
+    url.searchParams.set('mode', 'demo');
+    if (selectedDemoVideoId) {
+      url.searchParams.set('video_id', selectedDemoVideoId);
+    }
+  }
+  return url;
+}
+
+function ensureMinimumObjects(objects: string[], minCount: number): string[] {
+  const merged = new Set(
+    objects
+      .map((obj) => obj.trim().toLowerCase())
+      .filter((obj) => obj.length > 0 && obj !== 'object' && obj !== 'objects' && obj !== 'item'),
+  );
+
+  for (const fallback of PLAN_FALLBACK_OBJECTS) {
+    if (merged.size >= minCount) break;
+    merged.add(fallback);
+  }
+
+  return Array.from(merged).slice(0, 8);
+}
