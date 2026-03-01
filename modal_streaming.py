@@ -113,7 +113,7 @@ image = (
     .add_local_dir("server", remote_path="/root/project/server", copy=True)
     # Build frontend inside the image
     .run_commands(
-        "cd /root/project/server/webserver && npm install && npx vite build"
+        "cd /root/project/server/webserver && npm install && node node_modules/vite/bin/vite.js build"
     )
 )
 

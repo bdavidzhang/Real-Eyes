@@ -146,37 +146,6 @@
       </div> -->
     </div>
 
-    <!-- Object Detection Panel -->
-    <div id="detection-panel" class="glass-panel">
-      <div class="panel-header">
-        <span>Object Detection</span>
-        <span id="detectionCount" class="detection-count">0</span>
-      </div>
-
-      <div class="detection-input-section">
-        <label class="settings-label">Objects to Detect</label>
-        <textarea
-          id="detectionInput"
-          class="detection-textarea"
-          placeholder="Enter objects, one per line or comma-separated&#10;e.g. chair, monitor, backpack"
-          rows="3"
-        ></textarea>
-        <div class="detection-btn-row">
-          <button id="setTargetsBtn" class="primary detection-btn">Set Targets</button>
-          <button id="clearTargetsBtn" class="danger detection-btn">Clear</button>
-        </div>
-      </div>
-
-      <div id="activeQueriesList" class="active-queries-list"></div>
-
-      <div class="detection-divider"></div>
-
-      <div class="detection-results-header">
-        <span>Detections</span>
-      </div>
-      <div id="detectionResultsList" class="detection-results-list"></div>
-    </div>
-
     <!-- Spatial Agent Panel -->
     <div id="agent-panel" class="glass-panel">
       <div class="agent-head">
@@ -254,9 +223,26 @@
             <div class="agent-missions-empty">No active missions</div>
           </div>
 
+          <!-- Compact detection input -->
+          <div class="agent-section-header agent-section-header--with-count">
+            Object Detection
+            <span id="detectionCount" class="detection-count">0</span>
+          </div>
+          <div class="agent-detection-input">
+            <div class="detection-add-row">
+              <input type="text" id="detectionInput" class="agent-detection-inline"
+                placeholder="Add object..." autocomplete="off" />
+              <button id="setTargetsBtn" class="primary detection-btn detection-btn-sm">Add</button>
+              <button id="clearTargetsBtn" class="danger detection-btn detection-btn-sm">Clear</button>
+            </div>
+          </div>
+          <div id="activeQueriesList" class="active-queries-list"></div>
+
+          <!-- Unified Visual Context gallery — detection cards + agent snapshots -->
           <div class="agent-section-header">Visual Context</div>
           <div id="agent-context-gallery" class="agent-context-gallery">
-            <div class="agent-context-empty">No snapshots yet</div>
+            <div id="detectionResultsList"></div>
+            <div class="agent-context-empty" id="agent-context-empty">No snapshots yet</div>
           </div>
         </section>
       </div>
@@ -298,7 +284,6 @@
       <button id="stopDemoBtn" class="danger" style="display: none;">Stop Demo</button>
       <button id="resetViewBtn">Reset View</button>
       <button id="settingsBtn" class="icon" title="Settings (S)">⚙</button>
-      <button id="toggleDetectionBtn" title="Detection Panel (D)">🎯 Detection</button>
       <button id="toggleAgentBtn" title="Agent Panel (A)">🤖 Agent</button>
       <a href="/sender.html" class="nav-link">Camera Streamer</a>
       <a href="/summary.html" class="nav-link" id="summaryLink">📊 Summary</a>

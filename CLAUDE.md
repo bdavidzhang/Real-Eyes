@@ -198,7 +198,10 @@ The `agents` branch adds an autonomous spatial intelligence layer:
 **Integration:** Agent sessions are managed in `server/app.py`; agent goals/findings are visualized on `plan.html` and `summary.html` in the frontend.
 
 **Config env vars (Modal or local):**
-- `SPATIAL_ORCH_MODEL` — LLM model (default `anthropic/claude-3.5-sonnet-20241022`)
+- `SPATIAL_ORCH_MODEL` — orchestrator LLM (default `anthropic/claude-3.5-sonnet-20241022`)
+- `SPATIAL_SUBAGENT_MODEL` — subagent LLM (default `anthropic/claude-3.5-haiku-20241022`)
+- `SPATIAL_ORCH_FALLBACKS` — CSV fallback models for orchestrator
+- `SPATIAL_SUBAGENT_FALLBACKS` — CSV fallback models for subagent
 - `CORS_ALLOWED_ORIGINS` — CORS policy (default `*`)
 
 Modal secrets needed: `huggingface-secret`, `gemini-secret`, and OpenRouter key.
@@ -253,9 +256,33 @@ npm run build    # Bundle to dist/
 
 ## Conventions
 
-- Poses are 4x4 homography matrices normalized to SL(4) (det=1) via `normalize_to_sl4()`
-- Point clouds: numpy arrays shaped `(S, H, W, 3)` in world frame; colors as uint8 `[0-255]`
-- Confidence maps: per-pixel float in `[0, 1]`, thresholded by percentile (`conf_threshold` arg = % of lowest-confidence points to filter)
-- Images: torch tensors `(B, 3, H, W)` normalized to `[0, 1]` for model input
-- `slam_utils.py` contains shared utilities (image sorting, camera decomposition, geometry, timing via `Accumulator` context manager)
+| Data | Shape / dtype |
+|------|--------------|
+| Model input images | `(B, 3, H, W)` torch `float` `[0,1]`, cast to `bfloat16` |
+| `world_points` | `(S, H, W, 3)` numpy `float32`, world frame |
+| `colors` | `(S, H, W, 3)` numpy `uint8` `[0,255]` |
+| `depth_conf` | `(S, H, W)` numpy `float32` `[0,1]` |
+| Poses (cam-to-world) | `(S, 4, 4)` numpy `float32`, SL(4) homography |
+| `extrinsic` (world-to-cam) | `(S, 3, 4)` numpy `float32` |
+| `proj_mats` (K padded) | `(S, 4, 4)` numpy `float32` |
+
+- `conf_threshold` is a **percentile** (not a fraction): filters the bottom N% lowest-confidence points
+- Retrieval vectors use **L2 distance** (SALAD); semantic vectors use **cosine similarity** (CLIP)
+- GTSAM node IDs: `node_id = submap_id + frame_index_within_submap`; use `X(node_id)` symbols
+- `pred` dict from `Solver.run_predictions()` keys: `images`, `extrinsic`, `intrinsic`, `depth`, `depth_conf`, `detected_loops`; LC data uses `_lc`-suffixed keys
+- `slam_utils.py` has shared geometry and the `Accumulator` timer context manager (`with vggt_timer: ...`)
 - Pose output format (TUM): `timestamp tx ty tz qx qy qz qw` written by `GraphMap.write_poses_to_file()`
+
+## Code Style
+
+- `snake_case` throughout; no abstract base classes; duck-typed component interfaces
+- Type hints are minimal; short single-line docstrings on key public methods only
+- `DEBUG = False` module-level flag in `solver.py` gates matplotlib/open3d debug plots
+
+## Known Gotchas
+
+- `get_projection_matrix` in `graph.py` has a typo (`return projection_matri`) — **the method is broken**, avoid calling it
+- `normalize_to_sl4()` calls are commented out in `PoseGraph`; GTSAM matrices may not be strictly SL(4)
+- LC submaps (`is_lc_submap=True`) are excluded from pose output and visualization; iterate `non_lc_submap_ids` for display
+- Detection cache in `StreamingSLAM` is keyed by `(submap_id, frame_idx, query)` and guarded by `_detection_lock`
+- All viewer calls in `StreamingSLAM` must be guarded by `if self.viewer is None: return`

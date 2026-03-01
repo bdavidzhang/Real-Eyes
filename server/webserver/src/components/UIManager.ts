@@ -44,17 +44,15 @@ export class UIManager {
   private downloadSplatBtn: HTMLButtonElement;
   private settingsOpen = false;
 
-  // Detection panel
-  private detectionPanel: HTMLElement;
-  private toggleDetectionBtn: HTMLButtonElement;
-  private detectionInput: HTMLTextAreaElement;
+  // Detection input (now inside agent panel)
+  private detectionInput: HTMLInputElement;
   private setTargetsBtn: HTMLButtonElement;
   private clearTargetsBtn: HTMLButtonElement;
   private activeQueriesList: HTMLElement;
   private detectionResultsList: HTMLElement;
   private detectionCountEl: HTMLElement;
-  private detectionOpen = false;
   private queryColorMap = new Map<string, string>();
+  private currentQueries: string[] = [];
 
   // Preview modal
   private previewOverlay: HTMLElement;
@@ -127,10 +125,8 @@ export class UIManager {
     this.settingsBtn = this.getElement('settingsBtn') as HTMLButtonElement;
     this.downloadSplatBtn = this.getElement('downloadSplatBtn') as HTMLButtonElement;
 
-    // Get detection panel elements
-    this.detectionPanel = this.getElement('detection-panel');
-    this.toggleDetectionBtn = this.getElement('toggleDetectionBtn') as HTMLButtonElement;
-    this.detectionInput = this.getElement('detectionInput') as HTMLTextAreaElement;
+    // Get detection elements (now inside agent panel)
+    this.detectionInput = this.getElement('detectionInput') as HTMLInputElement;
     this.setTargetsBtn = this.getElement('setTargetsBtn') as HTMLButtonElement;
     this.clearTargetsBtn = this.getElement('clearTargetsBtn') as HTMLButtonElement;
     this.activeQueriesList = this.getElement('activeQueriesList');
@@ -213,11 +209,6 @@ export class UIManager {
       this.onDownloadSplatCallback?.();
     });
 
-    // Detection panel buttons
-    this.toggleDetectionBtn.addEventListener('click', () => {
-      this.toggleDetection();
-    });
-
     this.toggleDetLabelsBtn.addEventListener('click', () => {
       this.onToggleDetLabelsCallback?.();
     });
@@ -233,17 +224,26 @@ export class UIManager {
     this.clearTargetsBtn.addEventListener('click', () => {
       this.detectionInput.value = '';
       this.queryColorMap.clear();
+      this.currentQueries = [];
       this.activeQueriesList.innerHTML = '';
-      this.detectionResultsList.innerHTML = '<div class="detection-empty">No active queries</div>';
+      this.detectionResultsList.innerHTML = '';
       this.detectionCountEl.textContent = '0';
       this.onClearTargetsCallback?.();
     });
 
-    // Submit on Enter in textarea (Shift+Enter for newline)
+    // Submit on Enter in inline input
     this.detectionInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter') {
         e.preventDefault();
         this.handleSetTargets();
+      }
+    });
+
+    // Event delegation: click × on a query chip to remove it
+    this.activeQueriesList.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('.query-chip-remove') as HTMLElement | null;
+      if (btn?.dataset.query) {
+        this.removeQuery(btn.dataset.query);
       }
     });
 
@@ -284,9 +284,6 @@ export class UIManager {
           break;
         case 's':
           this.toggleSettings();
-          break;
-        case 'd':
-          this.toggleDetection();
           break;
       }
     });
@@ -466,35 +463,37 @@ export class UIManager {
   }
 
   /**
-   * Toggle detection panel
-   */
-  private toggleDetection(): void {
-    this.detectionOpen = !this.detectionOpen;
-    this.detectionPanel.classList.toggle('open', this.detectionOpen);
-    this.toggleDetectionBtn.classList.toggle('active', this.detectionOpen);
-    // Close settings panel if open to avoid overlap
-    if (this.detectionOpen && this.settingsOpen) {
-      this.settingsOpen = false;
-      this.settingsPanel.classList.remove('open');
-      this.settingsBtn.classList.remove('active');
-    }
-  }
-
-  /**
-   * Parse input and fire set targets callback
+   * Parse inline input and add new queries to the existing set
    */
   private handleSetTargets(): void {
     const raw = this.detectionInput.value.trim();
     if (!raw) return;
-    const queries = raw.split(/[\n,]/).map(q => q.trim()).filter(q => q.length > 0);
-    if (queries.length === 0) return;
-    this.onSetTargetsCallback?.(queries);
+    const newItems = raw.split(/[,\n]/).map(q => q.trim().toLowerCase()).filter(q => q.length > 0);
+    if (newItems.length === 0) return;
+    this.detectionInput.value = '';
+    const merged = [...new Set([...this.currentQueries, ...newItems])];
+    this.onSetTargetsCallback?.(merged);
   }
 
   /**
-   * Update the display of active query chips
+   * Remove a single query from the active set
+   */
+  private removeQuery(query: string): void {
+    const remaining = this.currentQueries.filter(q => q !== query);
+    if (remaining.length === this.currentQueries.length) return;
+    if (remaining.length === 0) {
+      this.onClearTargetsCallback?.();
+    } else {
+      this.onSetTargetsCallback?.(remaining);
+    }
+  }
+
+  /**
+   * Update the display of active query chips (with hover-to-remove × button)
    */
   updateDetectionQueries(queries: string[]): void {
+    this.currentQueries = [...queries];
+
     // Assign stable colors
     let idx = 0;
     for (const q of queries) {
@@ -509,46 +508,42 @@ export class UIManager {
       if (!activeSet.has(key)) this.queryColorMap.delete(key);
     }
 
-    if (queries.length === 0) {
-      this.activeQueriesList.innerHTML = '';
-      return;
-    }
-
-    this.activeQueriesList.innerHTML = queries.map(q => {
+    this.activeQueriesList.innerHTML = '';
+    for (const q of queries) {
       const color = this.queryColorMap.get(q) || '#ffffff';
-      return `<span class="query-chip"><span class="query-chip-dot" style="background:${color}"></span>${this.escapeHtml(q)}</span>`;
-    }).join('');
+      const chip = document.createElement('span');
+      chip.className = 'query-chip';
+      chip.innerHTML = `<span class="query-chip-dot" style="background:${color}"></span>${this.escapeHtml(q)}<button class="query-chip-remove" data-query="${this.escapeHtml(q)}" title="Remove">&times;</button>`;
+      this.activeQueriesList.appendChild(chip);
+    }
   }
 
   /**
-   * Update the detection results list (clickable cards)
+   * Update the detection results gallery (clickable cards with DET type badge)
    */
   updateDetectionResults(detections: DetectionResult[]): void {
     const successful = detections.filter(d => d.success);
     this.detectionCountEl.textContent = successful.length.toString();
-
-    if (successful.length === 0) {
-      this.detectionResultsList.innerHTML = '<div class="detection-empty">No objects detected yet</div>';
-      return;
-    }
-
-    // Clear and rebuild with event listeners
     this.detectionResultsList.innerHTML = '';
+
     for (const det of successful) {
       const color = this.queryColorMap.get(det.query) || '#ffffff';
-      const conf = det.confidence !== undefined ? `${(det.confidence * 100).toFixed(0)}%` : '—';
-      const meta = `Submap ${det.matched_submap ?? '?'}, Frame ${det.matched_frame ?? '?'}`;
+      const conf = det.confidence !== undefined ? `${(det.confidence * 100).toFixed(0)}%` : '';
+      const hasImage = !!det.keyframe_image;
 
-      const card = document.createElement('div');
-      card.className = 'det-card det-card-clickable';
+      const card = document.createElement('figure');
+      card.className = 'agent-context-card agent-context-card--det det-card-clickable';
       card.innerHTML = `
-        <span class="det-card-dot" style="background:${color}"></span>
-        <div class="det-card-info">
-          <div class="det-card-query">${this.escapeHtml(det.query)}</div>
-          <div class="det-card-meta">${meta}</div>
-        </div>
-        <span class="det-card-conf">${conf}</span>
-        <span class="det-card-arrow">›</span>`;
+        <span class="context-type-tag">DET</span>
+        ${hasImage
+          ? `<img src="data:image/jpeg;base64,${det.keyframe_image}" alt="${this.escapeHtml(det.query)}" />`
+          : `<div class="context-card-placeholder" style="--card-color:${color}">
+               <span class="context-card-placeholder-label">${this.escapeHtml(det.query)}</span>
+             </div>`}
+        <figcaption>
+          <span>${this.escapeHtml(det.query)}</span>
+          ${conf ? `<span class="context-card-conf">${conf}</span>` : ''}
+        </figcaption>`;
       card.addEventListener('click', () => {
         this.showPreviewLoading(det);
         this.onDetectionClickCallback?.(det);
@@ -698,9 +693,7 @@ export class UIManager {
    * Programmatically populate detection input with objects
    */
   public populateDetectionInput(objects: string[]): void {
-    if (this.detectionInput) {
-      this.detectionInput.value = objects.join('\n');
-      console.log('📝 Populated detection input with objects:', objects);
-    }
+    this.updateDetectionQueries(objects);
+    console.log('📝 Populated detection queries:', objects);
   }
 }
