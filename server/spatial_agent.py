@@ -63,10 +63,10 @@ class SpatialAgent:
 
         # LLM config
         orch_model = os.environ.get(
-            "SPATIAL_ORCH_MODEL", "anthropic/claude-3.5-sonnet-20241022"
+            "SPATIAL_ORCH_MODEL", "google/gemini-3-flash-preview"
         )
         sub_model = os.environ.get(
-            "SPATIAL_SUBAGENT_MODEL", "anthropic/claude-3.5-haiku-20241022"
+            "SPATIAL_SUBAGENT_MODEL", "google/gemini-3-flash-preview"
         )
         orch_fallbacks = self._parse_csv_env(
             "SPATIAL_ORCH_FALLBACKS",

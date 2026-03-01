@@ -25,3 +25,4 @@ ftfy
 regex 
 openai>=1.30
 pydantic>=2.8
+google-genai

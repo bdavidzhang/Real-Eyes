@@ -726,7 +726,7 @@ def _get_plan_client() -> OpenRouterClient:
         _plan_client = OpenRouterClient(
             api_key=api_key,
             primary_model=os.environ.get(
-                "PLAN_MODEL", "anthropic/claude-3.5-haiku-20241022"
+                "PLAN_MODEL", "google/gemini-3-flash-preview"
             ),
             fallback_models=[
                 os.environ.get("PLAN_FALLBACK_MODEL", "openai/gpt-4o-mini")
@@ -736,6 +736,27 @@ def _get_plan_client() -> OpenRouterClient:
             max_retries=2,
         )
     return _plan_client
+
+
+def _plan_response_from_result(result):
+    return jsonify(
+        {
+            "objects": result.get("objects", []),
+            "waypoints": {
+                "enabled": True,
+                "justification": result.get(
+                    "waypoints_justification", "Waypoints mark key locations."
+                ),
+            },
+            "pathfinding": {
+                "enabled": True,
+                "justification": result.get(
+                    "pathfinding_justification",
+                    "Pathfinding visualizes your traversed route.",
+                ),
+            },
+        }
+    )
 
 
 @app.route("/api/plan", methods=["POST"])
@@ -765,26 +786,41 @@ def generate_plan():
             max_tokens=256,
         )
 
-        return jsonify(
-            {
-                "objects": result.get("objects", []),
-                "waypoints": {
-                    "enabled": True,
-                    "justification": result.get(
-                        "waypoints_justification", "Waypoints mark key locations."
-                    ),
-                },
-                "pathfinding": {
-                    "enabled": True,
-                    "justification": result.get(
-                        "pathfinding_justification",
-                        "Pathfinding visualizes your traversed route.",
-                    ),
-                },
-            }
-        )
+        return _plan_response_from_result(result)
     except Exception as e:
-        print(f"Plan generation error: {e}; falling back to keyword extraction")
+        print(f"Plan generation error: {e}; trying Gemini fallback")
+
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if gemini_api_key:
+            try:
+                from google import genai
+
+                gemini_model = os.environ.get("GEMINI_PLAN_MODEL", "gemini-3-flash-preview")
+                client = genai.Client(api_key=gemini_api_key)
+                response = client.models.generate_content(
+                    model=gemini_model,
+                    contents=(
+                    f'Given this scenario: "{prompt}"\n'
+                    "Return JSON with exact keys: "
+                    '{"objects": ["obj1", "obj2"], '
+                    '"waypoints_justification": "1-2 sentences", '
+                    '"pathfinding_justification": "1-2 sentences"}. '
+                    "Objects must be concrete physical items trackable in 3D space. "
+                    "Return only JSON."
+                    ),
+                )
+                content = response.text if response and response.text else ""
+                match = re.search(r"\{[\s\S]*\}", content)
+                if not match:
+                    raise ValueError("Gemini returned no JSON object")
+                result = json.loads(match.group())
+                return _plan_response_from_result(result)
+            except Exception as ge:
+                print(f"Gemini fallback error: {ge}; falling back to keyword extraction")
+        else:
+            print("Gemini fallback unavailable: GEMINI_API_KEY not set")
+
+        print("Falling back to keyword extraction")
         stopwords = {
             "i",
             "a",
@@ -840,7 +876,7 @@ def _get_assistant_client() -> OpenRouterClient:
         _assistant_client = OpenRouterClient(
             api_key=api_key,
             primary_model=os.environ.get(
-                "ASSISTANT_MODEL", "anthropic/claude-3.5-haiku-20241022"
+                "ASSISTANT_MODEL", "google/gemini-3-flash-preview"
             ),
             fallback_models=[
                 os.environ.get("ASSISTANT_FALLBACK_MODEL", "openai/gpt-4o-mini")
