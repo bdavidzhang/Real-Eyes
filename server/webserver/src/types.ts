@@ -217,6 +217,8 @@ export interface AgentUICommand {
   name:
     | 'focus_detection'
     | 'set_detection_queries'
+    | 'add_detection_query'
+    | 'remove_detection_query'
     | 'show_waypoint'
     | 'show_path'
     | 'show_toast'

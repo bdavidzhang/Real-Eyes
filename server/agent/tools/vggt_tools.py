@@ -178,6 +178,25 @@ class VGGTTools:
             "relations": relations[:20],
         }
 
+    def add_detection_object(self, args) -> dict[str, Any]:
+        """Add a single object to active detection queries. Actual scan is triggered via app.py."""
+        query = str(args.query).strip().lower()
+        if not query:
+            return {"success": False, "error": "empty query"}
+        with self.slam._detection_lock:
+            already_active = query in self.slam.active_queries
+        if already_active:
+            return {"success": True, "query": query, "status": "already_active"}
+        return {"success": True, "query": query, "status": "queued"}
+
+    def remove_detection_object(self, args) -> dict[str, Any]:
+        """Remove a single object from active detection queries and clear its cached detections."""
+        query = str(args.query).strip().lower()
+        if not query:
+            return {"success": False, "error": "empty query"}
+        self.slam.remove_query(query)
+        return {"success": True, "query": query, "removed": True}
+
     def propose_next_scan_focus(self, args) -> dict[str, Any]:
         goal = str(args.goal).strip() if args.goal else ""
         max_queries = int(args.max_queries)

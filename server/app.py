@@ -98,6 +98,9 @@ _demo_catalog_cache = None
 # Agent executor (model calls for multiple sessions)
 _agent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
 
+# Per-query detection task registry: (sid, query) -> asyncio.Task
+_query_tasks: dict[tuple[str, str], asyncio.Task] = {}
+
 # Query update lock (lazy-initialized under async context)
 _query_update_lock: Optional[asyncio.Lock] = None
 
@@ -254,25 +257,94 @@ def _collect_global_query_union() -> list[str]:
 
 
 def _on_agent_queries_changed(sid: str, queries: list[str]):
-    """Called from agent threads; schedules async global query refresh."""
+    """Called from agent threads; spawns/cancels per-query detection workers."""
     with _sessions_lock:
         state = _sessions.get(sid)
         if state is None:
             return
+        old = set(state.agent_queries)
         state.agent_queries = set(_normalize_query_list(queries))
+        new = set(state.agent_queries)
 
     if _event_loop is None or _event_loop.is_closed():
         return
 
-    fut = asyncio.run_coroutine_threadsafe(
-        _refresh_global_detection_queries(trigger_sid=sid, emit_progress=False),
+    removed = old - new
+    added = new - old
+
+    if not removed and not added:
+        return
+
+    asyncio.run_coroutine_threadsafe(
+        _apply_agent_query_diff(sid, added, removed),
         _event_loop,
     )
-    try:
-        fut.result(timeout=0.01)
-    except Exception:
-        # Fire-and-forget: timeout is expected; coroutine continues on event loop.
-        pass
+
+
+async def _apply_agent_query_diff(sid: str, added: set[str], removed: set[str]):
+    """Cancel tasks for removed agent queries and spawn tasks for new ones."""
+    if slam_processor is None:
+        return
+
+    print(
+        f"[agent_query_diff] sid={sid[:8]} "
+        f"+{sorted(added)} -{sorted(removed)} "
+        f"slam_active={slam_processor.active_queries}"
+    )
+
+    for q in removed:
+        task = _query_tasks.pop((sid, q), None)
+        if task and not task.done():
+            task.cancel()
+            print(f"  [agent_query_diff] cancelled task for '{q}'")
+        slam_processor.remove_query(q)
+        print(f"  [agent_query_diff] removed '{q}' — slam active_queries now: {slam_processor.active_queries}")
+        # Tell the frontend to remove the chip for this agent query
+        await sio.emit(
+            "agent_ui_command",
+            {
+                "id": str(uuid.uuid4())[:12],
+                "name": "remove_detection_query",
+                "args": {"query": q},
+                "mission_id": None,
+                "ttl_ms": None,
+                "timestamp": time.time(),
+            },
+            to=sid,
+        )
+
+    if removed:
+        active = _session_active_queries(sid)
+        accumulated = list(slam_processor.accumulated_detections)
+        filtered = _filter_detections_by_queries(accumulated, active)
+        print(f"  [agent_query_diff] immediate update: active={active} filtered={len(filtered)}")
+        await sio.emit(
+            "detection_partial",
+            {
+                "detections": filtered,
+                "active_queries": active,
+                "is_final": True,
+            },
+            to=sid,
+        )
+
+    for q in sorted(added):
+        print(f"  [agent_query_diff] spawning task for '{q}'")
+        # Tell the frontend to add a chip for this agent query immediately
+        await sio.emit(
+            "agent_ui_command",
+            {
+                "id": str(uuid.uuid4())[:12],
+                "name": "add_detection_query",
+                "args": {"query": q},
+                "mission_id": None,
+                "ttl_ms": None,
+                "timestamp": time.time(),
+            },
+            to=sid,
+        )
+        task = asyncio.create_task(_run_single_query_detection(q, sid))
+        _query_tasks[(sid, q)] = task
 
 
 def _create_session_agent(sid: str):
@@ -301,6 +373,65 @@ def _ensure_session(sid: str) -> SessionState:
             state.agent = _create_session_agent(sid)
         _sessions[sid] = state
         return state
+
+
+async def _run_single_query_detection(query: str, trigger_sid: str):
+    """Run detection for a single query, streaming partials to the triggering session."""
+    if slam_processor is None:
+        return
+
+    print(f"[query_worker:{query}] started sid={trigger_sid[:8]}")
+
+    loop = asyncio.get_event_loop()
+    partial_q: asyncio.Queue = asyncio.Queue()
+
+    def run():
+        try:
+            for partial in slam_processor.add_query_progressive(query):
+                loop.call_soon_threadsafe(partial_q.put_nowait, partial)
+        except Exception as e:
+            loop.call_soon_threadsafe(
+                partial_q.put_nowait,
+                {"detections": [], "is_final": True, "error": str(e)},
+            )
+
+    _gpu_executor.submit(run)
+
+    partial_count = 0
+    try:
+        while True:
+            partial = await partial_q.get()
+            partial_count += 1
+            active = _session_active_queries(trigger_sid)
+            all_dets = partial.get("detections", [])
+            filtered = _filter_detections_by_queries(all_dets, active)
+            is_final = bool(partial.get("is_final", False))
+
+            print(
+                f"[query_worker:{query}] partial #{partial_count} "
+                f"total_dets={len(all_dets)} filtered={len(filtered)} "
+                f"active={active} is_final={is_final}"
+                + (f" error={partial['error']}" if partial.get("error") else "")
+            )
+
+            if _is_sid_connected(trigger_sid):
+                await sio.emit(
+                    "detection_partial",
+                    {
+                        "detections": filtered,
+                        "active_queries": active,
+                        "is_final": is_final,
+                    },
+                    to=trigger_sid,
+                )
+            if is_final:
+                break
+    except asyncio.CancelledError:
+        print(f"[query_worker:{query}] cancelled after {partial_count} partials")
+        raise
+
+    print(f"[query_worker:{query}] done — {partial_count} partials emitted")
+    _query_tasks.pop((trigger_sid, query), None)
 
 
 async def _refresh_global_detection_queries(trigger_sid: Optional[str], emit_progress: bool):
@@ -627,6 +758,12 @@ def reset():
             result_queue.get_nowait()
         except Exception:
             break
+
+    # Cancel all per-query detection tasks
+    for key in list(_query_tasks.keys()):
+        task = _query_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
 
     agents_to_reset = []
     with _sessions_lock:
@@ -1157,6 +1294,12 @@ async def handle_disconnect(sid):
         except Exception:
             pass
 
+    # Cancel all per-query detection tasks for this session
+    for key in [k for k in _query_tasks if k[0] == sid]:
+        task = _query_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+
     print(f"Client disconnected ({remaining} remaining)")
 
     await _refresh_global_detection_queries(trigger_sid=None, emit_progress=False)
@@ -1228,10 +1371,56 @@ async def handle_set_detection_queries(sid, data):
     state = _ensure_session(sid)
 
     with _sessions_lock:
-        state.manual_queries = set(queries)
+        old = set(state.manual_queries)
+    new = set(queries)
 
-    print(f"Detection queries sid={sid}: {queries}")
-    await _refresh_global_detection_queries(trigger_sid=sid, emit_progress=True)
+    removed = old - new
+    added = new - old
+
+    print(
+        f"[set_detection_queries] sid={sid[:8]} "
+        f"old={sorted(old)} new={sorted(new)} "
+        f"+{sorted(added)} -{sorted(removed)} "
+        f"active_tasks={[k[1] for k in _query_tasks if k[0] == sid]}"
+    )
+
+    # Cancel tasks and remove detections for removed queries
+    for q in removed:
+        task = _query_tasks.pop((sid, q), None)
+        if task and not task.done():
+            task.cancel()
+            print(f"  [set_detection_queries] cancelled task for '{q}'")
+        slam_processor.remove_query(q)
+        print(f"  [set_detection_queries] removed query '{q}' — slam active_queries now: {slam_processor.active_queries}")
+
+    with _sessions_lock:
+        state.manual_queries = new
+
+    # Emit immediate update if anything was removed
+    if removed:
+        active = _session_active_queries(sid)
+        accumulated = list(slam_processor.accumulated_detections)
+        filtered = _filter_detections_by_queries(accumulated, active)
+        print(
+            f"  [set_detection_queries] immediate update: "
+            f"accumulated={len(accumulated)} filtered={len(filtered)} "
+            f"active_queries={active}"
+        )
+        await sio.emit(
+            "detection_partial",
+            {
+                "detections": filtered,
+                "active_queries": active,
+                "is_final": True,
+            },
+            to=sid,
+        )
+
+    # Spawn tasks for newly added queries
+    for q in sorted(added):
+        print(f"  [set_detection_queries] spawning detection task for '{q}'")
+        task = asyncio.create_task(_run_single_query_detection(q, sid))
+        _query_tasks[(sid, q)] = task
 
 
 @sio.on("get_detection_preview")

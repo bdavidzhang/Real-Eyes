@@ -551,6 +551,36 @@ class StreamingSLAM:
                     'is_final': i == len(all_submaps) - 1,
                 }
 
+    def remove_query(self, query: str):
+        """Remove a single query, purge its cache entries, rebuild detections without rerunning."""
+        with self._detection_lock:
+            self.active_queries = [q for q in self.active_queries if q != query]
+        self._cache_delete_removed_queries({query})
+        self._dedup_and_store()
+
+    def add_query_progressive(self, query: str):
+        """Add a single query and scan submaps for it progressively, yielding partial results.
+
+        Unlike run_detection_progressive, this method only adds/scans the given query without
+        touching any other active queries — safe to call concurrently for different queries.
+        """
+        with self._detection_lock:
+            if query not in self.active_queries:
+                self.active_queries.append(query)
+        all_submaps = self._sorted_submaps()
+        if not all_submaps:
+            self._dedup_and_store()
+            with self._detection_lock:
+                yield {'detections': list(self.accumulated_detections), 'is_final': True}
+            return
+        for i, submap in enumerate(all_submaps):
+            self._reconcile_detection_state([query], submaps=[submap], recompute_all_bboxes=False)
+            with self._detection_lock:
+                yield {
+                    'detections': list(self.accumulated_detections),
+                    'is_final': i == len(all_submaps) - 1,
+                }
+
     # Maximum number of frames per submap to run SAM on, chosen by CLIP similarity rank.
     # Only the top-K most semantically matching frames are segmented, so SAM focuses
     # on clear, well-composed views rather than every frame that barely clears the threshold.

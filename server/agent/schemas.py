@@ -37,6 +37,8 @@ class AgentUICommand(StrictModel):
     name: Literal[
         "focus_detection",
         "set_detection_queries",
+        "add_detection_query",
+        "remove_detection_query",
         "show_waypoint",
         "show_path",
         "show_toast",
@@ -126,6 +128,14 @@ class SearchSceneIndexArgs(StrictModel):
     query: str = Field(min_length=1, max_length=120)
     max_results: int = Field(default=8, ge=1, le=24)
     auto_deep_scan_on_miss: bool = True
+
+
+class AddDetectionObjectArgs(StrictModel):
+    query: str = Field(min_length=1, max_length=120)
+
+
+class RemoveDetectionObjectArgs(StrictModel):
+    query: str = Field(min_length=1, max_length=120)
 
 
 class StartDeepScanArgs(StrictModel):

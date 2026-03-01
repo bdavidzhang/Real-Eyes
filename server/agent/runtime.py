@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Callable
 
 from server.agent.schemas import (
+    AddDetectionObjectArgs,
     AgentToolEvent,
     GetSceneSnapshotArgs,
     InferSpatialRelationsArgs,
@@ -14,6 +15,7 @@ from server.agent.schemas import (
     LocateObject3DArgs,
     OpenDetectionPreviewUIArgs,
     ProposeNextScanFocusArgs,
+    RemoveDetectionObjectArgs,
     SearchObjectsArgs,
     SetDetectionQueriesUIArgs,
     FocusDetectionUIArgs,
@@ -94,6 +96,25 @@ class AgentRuntime:
                 description="Suggest next scan targets based on unresolved/low-confidence detections.",
                 args_model=ProposeNextScanFocusArgs,
                 handler=self.vggt.propose_next_scan_focus,
+            )
+        )
+        self.registry.register(
+            ToolDefinition(
+                name="add_detection_object",
+                description=(
+                    "Add a single object query to the live detection worker pool. "
+                    "Results stream to the viewer as submaps are scanned."
+                ),
+                args_model=AddDetectionObjectArgs,
+                handler=self.vggt.add_detection_object,
+            )
+        )
+        self.registry.register(
+            ToolDefinition(
+                name="remove_detection_object",
+                description="Remove a single object from the active detection pool and clear its bounding boxes.",
+                args_model=RemoveDetectionObjectArgs,
+                handler=self.vggt.remove_detection_object,
             )
         )
 

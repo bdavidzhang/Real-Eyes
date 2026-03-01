@@ -54,6 +54,10 @@ export class UIManager {
   private queryColorMap = new Map<string, string>();
   private currentQueries: string[] = [];
 
+  get queries(): string[] {
+    return this.currentQueries;
+  }
+
   // Preview cache for instant card thumbnails
   private previewCache = new Map<string, DetectionPreview>();
   private pendingPreviews = new Set<string>();
