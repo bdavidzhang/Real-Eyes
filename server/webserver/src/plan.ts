@@ -10,6 +10,7 @@ let selectedObjects: Set<string> = new Set();
 let trackingSource: TrackingSource = 'live';
 let selectedDemoVideoId: string | null = null;
 let loadingLineTimer: number | null = null;
+let typewriterTimer: number | null = null;
 
 const LOADING_LINES = [
   'Calibrating scene intelligence...',
@@ -28,10 +29,20 @@ const AGENT_LINES = [
 
 const PLAN_FALLBACK_OBJECTS = ['person', 'chair', 'table', 'bottle', 'backpack', 'door'];
 
-document.addEventListener('DOMContentLoaded', async () => {
-  console.log('Plan page loaded');
+const DEMO_OBJECTS_BY_VIDEO: Record<string, string[]> = {
+  'office_loop.mp4': ['whiteboard', 'recycling bin', 'trash can', 'coat rack', 'printer', 'refrigerator', 'coffee machine', 'monitor', 'door'],
+  'house.MOV': ['couch', 'coffee table', 'laptop', 'shoe rack', 'dining table', 'chair', 'water pitcher', 'sink', 'stove', 'kettle', 'fire extinguisher'],
+  'house2.MOV': ['leather couch', 'laptop', 'plant', 'dining table', 'chair', 'water pitcher', 'coffee maker', 'air fryer', 'cabinet', 'storage shelf'],
+  'crime_scene.mov': ['evidence marker', 'footprint', 'broken glass', 'eyeglasses', 'bookshelf', 'laptop', 'dining table', 'chair', 'lamp', 'carpet stain'],
+  'disaster.mov': ['table', 'yellow boots', 'bicycle', 'car', 'mattress', 'utility pole', 'bathtub', 'shopping cart', 'debris pile'],
+  'disaster2.mov': ['barber chair', 'piano', 'streetlight', 'office chair', 'traffic light', 'monitor', 'concrete slab', 'puddle'],
+  'hackathon_loop.MOV': ['staircase', 'bench', 'trash can', 'column', 'laptop', 'table', 'backpack', 'chair', 'railing'],
+  'our_workspace.MOV': ['laptop', 'chair', 'phone', 'water bottle', 'banana', 'backpack', 'jacket', 'suitcase', 'whiteboard', 'trash can'],
+};
 
-  // Initialize background mesh animation
+document.addEventListener('DOMContentLoaded', async () => {
+  console.log('Open Reality — mission brief loaded');
+
   const bgCanvas = document.getElementById('meshBg') as HTMLCanvasElement;
   if (bgCanvas) initMeshBackground(bgCanvas);
   setupAgentVoice();
@@ -49,32 +60,46 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   try {
-    // Show loading state
     showLoading();
+    setPipelineStage(1);
 
-    // Step 1: Extract objects
     const objects = await DedalusAPI.extractObjects(prompt);
     console.log('Extracted objects:', objects);
 
-    // Step 2: Generate plan
     const plan = await DedalusAPI.generatePlan(prompt, objects);
     console.log('Generated plan:', plan);
 
-    // if the word DEMO is in the prompt, hardcode the objects to be "chair", "brick", "table"
+    setPipelineStage(2);
+
     if (prompt.toUpperCase().includes('DEMO')) {
-      plan.objects = ['chair', 'brick', 'table', 'bottle', 'backpack', 'door'];
+      const videoObjects = selectedDemoVideoId ? DEMO_OBJECTS_BY_VIDEO[selectedDemoVideoId] : null;
+      plan.objects = videoObjects ?? ['chair', 'table', 'bottle', 'backpack', 'door'];
     }
     plan.objects = ensureMinimumObjects(plan.objects, 5);
 
     selectedObjects = new Set(plan.objects);
 
-    // Step 3: Display plan
     displayPlan(plan);
+    setPipelineStage(3);
   } catch (error) {
     console.error('Failed to generate plan:', error);
     showError();
   }
 });
+
+/* ── Pipeline ── */
+
+function setPipelineStage(stage: number): void {
+  for (let i = 1; i <= 3; i++) {
+    const el = document.getElementById(`pipelineStep${i}`);
+    if (!el) continue;
+    el.classList.remove('active', 'completed');
+    if (i < stage) el.classList.add('completed');
+    if (i === stage) el.classList.add('active');
+  }
+}
+
+/* ── Loading / Error ── */
 
 function showLoading(): void {
   document.getElementById('loadingState')!.style.display = 'flex';
@@ -92,37 +117,40 @@ function showError(): void {
   document.getElementById('loadingState')!.style.display = 'none';
   document.getElementById('planContent')!.style.display = 'none';
   document.getElementById('errorState')!.style.display = 'flex';
-  setAgentLine('Signal interrupted. Re-run mission compile and I will recover.');
+  typewriteAgentLine('Signal interrupted. Re-run mission compile and I will recover.');
 
   document.getElementById('retryBtn')?.addEventListener('click', () => {
     window.location.reload();
   });
 }
 
+/* ── Display Plan ── */
+
 function displayPlan(plan: TrackingPlan): void {
   stopLoadingLineRotation();
   document.getElementById('loadingState')!.style.display = 'none';
   document.getElementById('planContent')!.style.display = 'block';
 
-  // Render selected objects
   renderObjects(plan.objects);
-  setAgentLine(buildLaunchLine(plan.objects));
+  typewriteAgentLine(buildLaunchLine(plan.objects));
 
-  // Setup event handlers
   setupAddObjectHandler();
   setupConfirmHandler();
 }
+
+/* ── Object Chips with Staggered Animation ── */
 
 function renderObjects(objects: string[]): void {
   const container = document.getElementById('objectsList')!;
   container.innerHTML = '';
 
-  objects.forEach(obj => {
+  objects.forEach((obj, index) => {
     const chip = document.createElement('div');
     chip.className = 'object-chip';
+    chip.style.animationDelay = `${index * 60}ms`;
     chip.innerHTML = `
       <span>${obj}</span>
-      <button class="remove-btn" data-object="${obj}">×</button>
+      <button class="remove-btn" data-object="${obj}">\u00d7</button>
     `;
 
     chip.querySelector('.remove-btn')?.addEventListener('click', (e) => {
@@ -178,12 +206,49 @@ function setupConfirmHandler(): void {
   });
 }
 
+/* ── Agent Voice — Typewriter Effect ── */
+
 function setupAgentVoice(): void {
   const agentLineEl = document.getElementById('agentLine');
   if (!agentLineEl) return;
-  setAgentLine(AGENT_LINES[0]);
-  rotateLines(agentLineEl, AGENT_LINES, 4200);
+  typewriteAgentLine(AGENT_LINES[0]);
+
+  let lineIndex = 0;
+  setInterval(() => {
+    lineIndex = (lineIndex + 1) % AGENT_LINES.length;
+    typewriteAgentLine(AGENT_LINES[lineIndex]);
+  }, 6000);
 }
+
+function typewriteAgentLine(message: string): void {
+  if (typewriterTimer !== null) {
+    clearInterval(typewriterTimer);
+    typewriterTimer = null;
+  }
+
+  const el = document.getElementById('agentLine');
+  if (!el) return;
+
+  el.classList.remove('typing-cursor');
+  el.textContent = '';
+
+  let charIndex = 0;
+  el.classList.add('typing-cursor');
+
+  typewriterTimer = window.setInterval(() => {
+    if (charIndex < message.length) {
+      el.textContent = message.slice(0, charIndex + 1);
+      charIndex++;
+    } else {
+      if (typewriterTimer !== null) {
+        clearInterval(typewriterTimer);
+        typewriterTimer = null;
+      }
+    }
+  }, 28);
+}
+
+/* ── Utilities ── */
 
 function rotateLines(el: HTMLElement, lines: string[], intervalMs: number): number {
   let index = Math.floor(Math.random() * lines.length);
@@ -201,16 +266,11 @@ function stopLoadingLineRotation(): void {
   }
 }
 
-function setAgentLine(message: string): void {
-  const el = document.getElementById('agentLine');
-  if (el) el.textContent = message;
-}
-
 function buildLaunchLine(objects: string[]): string {
   if (objects.length === 0) return 'No targets locked yet. Add objects and I will spin up the sweep.';
   if (objects.length === 1) return `Target locked: ${objects[0]}. I am ready to track.`;
   if (objects.length === 2) return `Targets locked: ${objects[0]} + ${objects[1]}. Ready to execute.`;
-  return `Targets locked: ${objects[0]} + ${objects[1]}. ${objects.length - 2} more queued.`;
+  return `Targets locked: ${objects[0]} + ${objects[1]}. ${objects.length - 2} more queued. Systems hot.`;
 }
 
 function setupCameraQr(): void {

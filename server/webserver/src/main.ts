@@ -20,7 +20,7 @@ class SLAMViewerApp {
   private demoVideoId: string | null = null;
 
   constructor() {
-    console.log('🎨 VGGT-SLAM Viewer initializing...');
+    console.log('Open Reality — viewer initializing...');
 
     // Initialize managers
     const container = document.getElementById('app');
@@ -39,7 +39,7 @@ class SLAMViewerApp {
     this.setupAgentHandlers();
     void this.loadIncomingTrackingPlan();
 
-    console.log('✅ VGGT-SLAM Viewer ready!');
+    console.log('Open Reality — viewer ready');
   }
 
   /**

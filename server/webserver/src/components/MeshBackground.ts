@@ -15,11 +15,19 @@ export function initMeshBackground(canvas: HTMLCanvasElement): () => void {
   const POINT_OPACITY = 0.35;
   const SPEED = 0.3;
 
+  const TINT_COLORS = [
+    '255, 255, 255',   // white
+    '0, 240, 255',     // cyan
+    '110, 168, 254',   // blue
+    '168, 85, 247',    // violet
+  ];
+
   interface Particle {
     x: number;
     y: number;
     vx: number;
     vy: number;
+    tint: string;
   }
 
   let particles: Particle[] = [];
@@ -37,6 +45,7 @@ export function initMeshBackground(canvas: HTMLCanvasElement): () => void {
         y: Math.random() * height,
         vx: (Math.random() - 0.5) * SPEED,
         vy: (Math.random() - 0.5) * SPEED,
+        tint: TINT_COLORS[Math.random() < 0.6 ? 0 : Math.floor(Math.random() * TINT_COLORS.length)],
       });
     }
   }
@@ -55,7 +64,6 @@ export function initMeshBackground(canvas: HTMLCanvasElement): () => void {
       if (p.y > height) p.y = 0;
     }
 
-    // Draw lines between close particles
     for (let i = 0; i < particles.length; i++) {
       for (let j = i + 1; j < particles.length; j++) {
         const dx = particles[i].x - particles[j].x;
@@ -67,18 +75,17 @@ export function initMeshBackground(canvas: HTMLCanvasElement): () => void {
           ctx.beginPath();
           ctx.moveTo(particles[i].x, particles[i].y);
           ctx.lineTo(particles[j].x, particles[j].y);
-          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.strokeStyle = `rgba(${particles[i].tint}, ${alpha})`;
           ctx.lineWidth = 0.5;
           ctx.stroke();
         }
       }
     }
 
-    // Draw points
     for (const p of particles) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, POINT_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255, 255, 255, ${POINT_OPACITY})`;
+      ctx.fillStyle = `rgba(${p.tint}, ${POINT_OPACITY})`;
       ctx.fill();
     }
 

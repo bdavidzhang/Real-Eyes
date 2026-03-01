@@ -1,5 +1,5 @@
 /**
- * Type definitions for VGGT-SLAM data structures
+ * Type definitions for Open Reality data structures
  */
 
 export interface SLAMUpdate {
@@ -75,7 +75,7 @@ export interface BoundingBox3D {
 }
 
 /**
- * Result from a single object detection query (VGGT-SLAM 2.0 pipeline)
+ * Result from a single object detection query (Open Reality pipeline)
  */
 export interface DetectionResult {
   success: boolean;

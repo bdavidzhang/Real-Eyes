@@ -5,6 +5,8 @@ body {
   font-family: var(--font-body);
 }
 
+/* ── Canvas Layers ── */
+
 .hero-canvas {
   position: fixed;
   top: 0;
@@ -12,7 +14,6 @@ body {
   width: 100vw;
   height: 100vh;
   z-index: 0;
-  /* Allow pointer events so user can interact with the 3D scene */
   pointer-events: auto;
 }
 
@@ -26,6 +27,8 @@ body {
   pointer-events: none;
 }
 
+/* ── Demo Panel ── */
+
 .demo-quick-launch {
   position: fixed;
   top: 16px;
@@ -38,7 +41,9 @@ body {
 
 .demo-label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-secondary);
   margin-bottom: 6px;
 }
@@ -69,8 +74,8 @@ body {
 }
 
 .demo-thumb-btn.selected {
-  border-color: rgba(110, 168, 254, 0.85);
-  box-shadow: 0 0 0 1px rgba(110, 168, 254, 0.5) inset;
+  border-color: rgba(0, 240, 255, 0.6);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3) inset;
 }
 
 .demo-thumb {
@@ -95,6 +100,25 @@ body {
   padding: 8px 12px;
 }
 
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: var(--transition);
+  font-weight: 500;
+  font-family: var(--font-body);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Landing Overlay ── */
+
 .landing-overlay {
   position: fixed;
   top: 0;
@@ -107,11 +131,10 @@ body {
   z-index: 2;
   background: radial-gradient(
     circle at center,
-    rgba(0, 0, 0, 0.3) 0%,
+    rgba(0, 0, 0, 0.25) 0%,
     rgba(0, 0, 0, 0.7) 100%
   );
   transition: background 400ms ease, opacity 400ms ease, justify-content 0ms;
-  /* Let pointer events pass to the canvas behind, except for interactive content */
   pointer-events: none;
 }
 
@@ -120,45 +143,66 @@ body {
   background: radial-gradient(circle at 70% 50%, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.5) 100%);
 }
 
+/* ── Landing Content ── */
+
 .landing-content {
-  max-width: 600px;
+  max-width: 640px;
   width: 90%;
   text-align: center;
   padding: 40px;
   transition: transform 600ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease, text-align 0ms, margin 600ms cubic-bezier(.2,.9,.2,1);
-  /* This panel should still receive pointer events (form, buttons) */
   pointer-events: auto;
 }
 
-/* When user first interacts, align content to the left */
 .landing-content.active {
   text-align: left;
   margin-left: 5vw;
   opacity: 0.95;
 }
 
-.landing-title {
-  font-size: clamp(32px, 5vw, 48px);
-  font-weight: 600;
-  margin: 0 0 12px 0;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+.landing-content.active .feature-badges {
+  justify-content: flex-start;
 }
 
-.landing-subtitle {
-  font-size: clamp(24px, 4vw, 36px);
+/* ── Kicker ── */
+
+.landing-kicker {
+  margin: 0 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
   font-weight: 500;
-  margin: 0 0 16px 0;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
 }
 
-.landing-description {
-  font-size: 18px;
-  color: var(--text-secondary);
-  margin: 0 0 48px 0;
-  line-height: 1.6;
+/* ── Title ── */
+
+.landing-title {
+  font-size: clamp(40px, 6vw, 72px);
+  font-weight: 700;
+  margin: 0 0 14px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
 }
+
+/* ── Tagline ── */
+
+.landing-tagline {
+  font-size: clamp(16px, 2.5vw, 20px);
+  color: var(--text-secondary);
+  margin: 0 0 28px 0;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+/* ── Badges row spacing ── */
+
+.landing-content .feature-badges {
+  margin-bottom: 36px;
+}
+
+/* ── Prompt Form ── */
 
 .prompt-form {
   padding: 24px;
@@ -176,23 +220,30 @@ body {
   box-sizing: border-box;
 }
 
-.prompt-form .btn-primary {
+.prompt-form .btn-glow {
   width: 100%;
-  padding: 14px;
-  font-size: 16px;
-  font-weight: 600;
 }
+
+/* ── Responsive ── */
 
 @media (max-width: 768px) {
   .landing-content {
     padding: 20px;
   }
 
-  .landing-description {
-    margin-bottom: 32px;
+  .landing-tagline {
+    margin-bottom: 20px;
+  }
+
+  .landing-content .feature-badges {
+    margin-bottom: 24px;
   }
 
   .prompt-form {
     padding: 20px;
+  }
+
+  .landing-kicker {
+    font-size: 10px;
   }
 }
