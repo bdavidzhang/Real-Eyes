@@ -12,142 +12,142 @@
     />
   </head>
   <body>
-    <!-- Main 3D Canvas Container -->
-    <div id="app"></div>
+    <!-- Main 3D Canvas Container (overlays live inside so they're canvas-relative) -->
+    <div id="app">
 
-    <!-- Status Indicator -->
-    <div id="status" class="glass-panel">
-      <span id="status-dot" class="status-dot status-disconnected"></span>
-      <span id="status-text">Disconnected</span>
-      <span id="latency" style="display: none"></span>
+      <!-- Status Indicator -->
+      <div id="status" class="glass-panel">
+        <span id="status-dot" class="status-dot status-disconnected"></span>
+        <span id="status-text">Disconnected</span>
+        <span id="latency" style="display: none"></span>
+      </div>
+
+      <div id="viewerModeBadge" class="mode-badge" style="display: none;">DEMO MODE</div>
+
+      <!-- Info Panel -->
+      <div id="info-panel" class="glass-panel">
+        <div class="panel-header">
+          <span>VGGT-SLAM Live</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Frames</span>
+          </span>
+          <span class="stat-value" id="frame">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Submaps</span>
+          </span>
+          <span class="stat-value" id="submaps">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Loop Closures</span>
+          </span>
+          <span class="stat-value" id="loops">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Points</span>
+          </span>
+          <span class="stat-value" id="points">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Cameras</span>
+          </span>
+          <span class="stat-value" id="cameras">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Update FPS</span>
+          </span>
+          <span class="stat-value" id="fps">0</span>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div id="settings-panel" class="glass-panel">
+        <div class="panel-header">Settings</div>
+
+        <div class="settings-section">
+          <label class="settings-label">Display Toggles</label>
+          <div class="toggle-row">
+            <span class="toggle-label">Points</span>
+            <button id="togglePointsBtn" class="toggle-btn active" title="P">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Cameras</span>
+            <button id="toggleCamsBtn" class="toggle-btn active" disabled title="C">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Grid</span>
+            <button id="toggleGridBtn" class="toggle-btn active" title="G">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Follow Camera</span>
+            <button id="followCamBtn" class="toggle-btn" disabled title="Follow">OFF</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Rotate 180°</span>
+            <button id="flipYBtn" class="toggle-btn" title="F">OFF</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Det. Labels</span>
+            <button id="toggleDetLabelsBtn" class="toggle-btn active" title="Toggle detection labels">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Det. Boxes</span>
+            <button id="toggleDetBoxesBtn" class="toggle-btn active" title="Toggle detection boxes">ON</button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-label">Point Size</label>
+          <div class="slider-container">
+            <input
+              type="range"
+              id="pointSizeSlider"
+              min="0.005"
+              max="0.1"
+              step="0.005"
+              value="0.02"
+            />
+            <span class="slider-value">0.02</span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-label">Actions</label>
+          <div class="settings-actions">
+            <button id="downloadSplatBtn" class="settings-action-btn" title="Download point cloud PLY">⬇ Download PLY</button>
+            <button id="resetBtn" class="settings-action-btn danger" disabled>Reset SLAM</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div id="controls" class="glass-panel">
+        <button id="connectBtn" class="primary">Connect</button>
+        <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+        <button id="stopDemoBtn" class="danger" style="display: none;">Stop Demo</button>
+        <button id="resetViewBtn">Reset View</button>
+        <button id="settingsBtn" class="icon" title="Settings (S)">⚙</button>
+        <a href="/sender.html" class="nav-link">Camera Streamer</a>
+        <a href="/summary.html" class="nav-link" id="summaryLink">📊 Summary</a>
+      </div>
+
     </div>
 
-    <div id="viewerModeBadge" class="mode-badge" style="display: none;">DEMO MODE</div>
-
-    <!-- Info Panel -->
-    <div id="info-panel" class="glass-panel">
-      <div class="panel-header">
-        <span>VGGT-SLAM Live</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Frames</span>
-        </span>
-        <span class="stat-value" id="frame">0</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Submaps</span>
-        </span>
-        <span class="stat-value" id="submaps">0</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Loop Closures</span>
-        </span>
-        <span class="stat-value" id="loops">0</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Points</span>
-        </span>
-        <span class="stat-value" id="points">0</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Cameras</span>
-        </span>
-        <span class="stat-value" id="cameras">0</span>
-      </div>
-
-      <div class="stat-row">
-        <span class="stat-label">
-          <span>Update FPS</span>
-        </span>
-        <span class="stat-value" id="fps">0</span>
-      </div>
-    </div>
-
-    <!-- Settings Panel -->
-    <div id="settings-panel" class="glass-panel">
-      <div class="panel-header">Settings</div>
-
-      <div class="settings-section">
-        <label class="settings-label">Display Toggles</label>
-        <div class="toggle-row">
-          <span class="toggle-label">Points</span>
-          <button id="togglePointsBtn" class="toggle-btn active" title="P">ON</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Cameras</span>
-          <button id="toggleCamsBtn" class="toggle-btn active" disabled title="C">ON</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Grid</span>
-          <button id="toggleGridBtn" class="toggle-btn active" title="G">ON</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Follow Camera</span>
-          <button id="followCamBtn" class="toggle-btn" disabled title="Follow">OFF</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Rotate 180°</span>
-          <button id="flipYBtn" class="toggle-btn" title="F">OFF</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Det. Labels</span>
-          <button id="toggleDetLabelsBtn" class="toggle-btn active" title="Toggle detection labels">ON</button>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-label">Det. Boxes</span>
-          <button id="toggleDetBoxesBtn" class="toggle-btn active" title="Toggle detection boxes">ON</button>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <label class="settings-label">Point Size</label>
-        <div class="slider-container">
-          <input
-            type="range"
-            id="pointSizeSlider"
-            min="0.005"
-            max="0.1"
-            step="0.005"
-            value="0.02"
-          />
-          <span class="slider-value">0.02</span>
-        </div>
-      </div>
-
-      <div class="settings-section">
-        <label class="settings-label">Actions</label>
-        <div class="settings-actions">
-          <button id="downloadSplatBtn" class="settings-action-btn" title="Download point cloud PLY">⬇ Download PLY</button>
-          <button id="resetBtn" class="settings-action-btn danger" disabled>Reset SLAM</button>
-        </div>
-      </div>
-
-      <!-- <div class="settings-section">
-        <label class="settings-label">Keyboard Shortcuts</label>
-        <div style="color: var(--text-secondary); font-size: 12px; line-height: 1.6">
-          <div><kbd>P</kbd> - Toggle Points</div>
-          <div><kbd>C</kbd> - Toggle Cameras</div>
-          <div><kbd>G</kbd> - Toggle Grid</div>
-          <div><kbd>F</kbd> - Flip Y-Axis</div>
-          <div><kbd>R</kbd> - Reset View</div>
-          <div><kbd>S</kbd> - Toggle Settings</div>
-          <div><kbd>D</kbd> - Toggle Detection Panel</div>
-        </div>
-      </div> -->
-    </div>
-
-    <!-- Spatial Agent Panel -->
-    <div id="agent-panel" class="glass-panel">
+    <!-- Spatial Agent Panel (always-on sidebar) -->
+    <div id="agent-panel">
       <div class="agent-head">
         <div class="agent-brand">
           <span class="agent-indicator"></span>
@@ -275,18 +275,6 @@
         </div>
         <div id="previewMeta" class="preview-meta"></div>
       </div>
-    </div>
-
-    <!-- Controls -->
-    <div id="controls" class="glass-panel">
-      <button id="connectBtn" class="primary">Connect</button>
-      <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
-      <button id="stopDemoBtn" class="danger" style="display: none;">Stop Demo</button>
-      <button id="resetViewBtn">Reset View</button>
-      <button id="settingsBtn" class="icon" title="Settings (S)">⚙</button>
-      <button id="toggleAgentBtn" title="Agent Panel (A)">🤖 Agent</button>
-      <a href="/sender.html" class="nav-link">Camera Streamer</a>
-      <a href="/summary.html" class="nav-link" id="summaryLink">📊 Summary</a>
     </div>
 
     <!-- Keyboard Shortcut Styles -->

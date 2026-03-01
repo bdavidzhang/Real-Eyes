@@ -90,9 +90,12 @@ export class SceneManager {
   private detectionCenters = new Map<string, [number, number, number]>();
 
   private animationId: number | null = null;
+  private container: HTMLElement;
   private readonly resizeHandler = () => this.onWindowResize();
 
   constructor(container: HTMLElement) {
+    this.container = container;
+
     // Scene setup
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x000000);
@@ -100,7 +103,7 @@ export class SceneManager {
     // Camera setup
     this.camera = new THREE.PerspectiveCamera(
       60,
-      window.innerWidth / window.innerHeight,
+      container.clientWidth / container.clientHeight,
       0.01,
       1000
     );
@@ -108,7 +111,7 @@ export class SceneManager {
 
     // Renderer setup
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(this.renderer.domElement);
 
@@ -860,9 +863,9 @@ export class SceneManager {
    * Handle window resize
    */
   private onWindowResize(): void {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
   }
 
   /**

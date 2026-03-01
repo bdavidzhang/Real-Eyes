@@ -85,9 +85,9 @@ class SLAMViewerApp {
       this.uiManager.showNotification(error, 'error');
     });
 
-    // Detection preview response
+    // Detection preview response — cache thumbnail + show modal if user is waiting
     this.connection.onDetectionPreview((data) => {
-      this.uiManager.showDetectionPreview(data);
+      this.uiManager.receivePreviewData(data);
     });
 
     // Progressive detection results — update scene and UI on each partial
@@ -294,21 +294,10 @@ class SLAMViewerApp {
       this.connection.toggleAgent(enabled);
     });
 
-    // Agent toggle button in controls bar
-    const toggleAgentBtn = document.getElementById('toggleAgentBtn');
-    if (toggleAgentBtn) {
-      toggleAgentBtn.addEventListener('click', () => {
-        this.agentPanel.toggle();
-        toggleAgentBtn.classList.toggle('active', this.agentPanel.isOpen());
-      });
-    }
-
-    // Keyboard shortcut: A for agent panel
-    document.addEventListener('keydown', (e) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
-      if (e.key.toLowerCase() === 'a') {
-        this.agentPanel.toggle();
-        toggleAgentBtn?.classList.toggle('active', this.agentPanel.isOpen());
+    // Auto-fetch preview thumbnails when detection cards are rendered
+    this.uiManager.onAutoFetchPreview((det) => {
+      if (det.matched_submap != null && det.matched_frame != null) {
+        this.connection.getDetectionPreview(det.matched_submap, det.matched_frame, det.query);
       }
     });
 

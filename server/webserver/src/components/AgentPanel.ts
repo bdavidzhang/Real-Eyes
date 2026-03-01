@@ -46,8 +46,8 @@ export class AgentPanel {
   private chatInput: HTMLInputElement;
   private chatSend: HTMLButtonElement;
 
-  // State
-  private open = false;
+  // State (sidebar is always visible)
+  private open = true;
   private autonomyEnabled = true;
   private feedPaused = false;
   private pauseBuffer: HTMLElement[] = [];

@@ -3,29 +3,24 @@
    ================================================ */
 
 #agent-panel {
-  position: absolute;
-  top: 70px;
-  right: -760px;
-  width: 740px;
-  max-height: calc(100vh - 140px);
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100vh;
   z-index: 900;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px;
+  gap: 12px;
+  padding: 16px;
   overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
   background:
     radial-gradient(circle at 12% 8%, rgba(88, 146, 255, 0.18), transparent 42%),
     radial-gradient(circle at 92% 0%, rgba(49, 242, 194, 0.12), transparent 32%),
-    linear-gradient(148deg, rgba(9, 13, 22, 0.95), rgba(6, 8, 14, 0.92));
-  box-shadow: 0 22px 44px rgba(0, 0, 0, 0.45);
-  transition: right 0.32s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-#agent-panel.open {
-  right: 24px;
+    linear-gradient(148deg, rgba(9, 13, 22, 0.97), rgba(6, 8, 14, 0.95));
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
 }
 
 .agent-head {
@@ -198,23 +193,33 @@
 }
 
 .agent-columns {
-  display: grid;
-  grid-template-columns: 1.1fr 1fr;
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .agent-column {
+  flex: 0 0 50%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.agent-columns .agent-column:last-child {
+/* Timeline column: clipped so #agent-activity-feed scrolls internally */
+.agent-column:first-child {
+  overflow: hidden;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Mission/Detection/Gallery column: scrolls as a whole */
+.agent-column:last-child {
   overflow-y: auto;
-  padding-right: 2px;
+  padding-right: 4px;
+  padding-top: 10px;
 }
 
 .agent-section-header {
@@ -567,8 +572,6 @@
 
 .agent-context-gallery {
   min-height: 80px;
-  max-height: 210px;
-  overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
@@ -805,32 +808,9 @@
   }
 }
 
-@media (max-width: 1200px) {
-  #agent-panel {
-    width: min(92vw, 680px);
-    right: -720px;
-  }
-
-  #agent-panel.open {
-    right: 16px;
-  }
-}
-
 @media (max-width: 860px) {
   #agent-panel {
-    top: auto;
-    bottom: 90px;
-    right: 12px;
-    left: 12px;
-    width: auto;
-    max-height: calc(100vh - 128px);
-    transform: translateY(120%);
-    transition: transform 0.25s ease;
-  }
-
-  #agent-panel.open {
-    right: 12px;
-    transform: translateY(0);
+    width: 320px;
   }
 
   .agent-columns {

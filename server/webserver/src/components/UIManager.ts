@@ -54,6 +54,12 @@ export class UIManager {
   private queryColorMap = new Map<string, string>();
   private currentQueries: string[] = [];
 
+  // Preview cache for instant card thumbnails
+  private previewCache = new Map<string, DetectionPreview>();
+  private pendingPreviews = new Set<string>();
+  private activePreviewKey: string | null = null;
+  private onAutoFetchPreviewCallback?: (det: DetectionResult) => void;
+
   // Preview modal
   private previewOverlay: HTMLElement;
   private previewCloseBtn: HTMLButtonElement;
@@ -519,7 +525,8 @@ export class UIManager {
   }
 
   /**
-   * Update the detection results gallery (clickable cards with DET type badge)
+   * Update the detection results gallery (clickable cards with DET type badge).
+   * Cards auto-fetch their keyframe thumbnail and show it instantly on click.
    */
   updateDetectionResults(detections: DetectionResult[]): void {
     const successful = detections.filter(d => d.success);
@@ -529,14 +536,17 @@ export class UIManager {
     for (const det of successful) {
       const color = this.queryColorMap.get(det.query) || '#ffffff';
       const conf = det.confidence !== undefined ? `${(det.confidence * 100).toFixed(0)}%` : '';
-      const hasImage = !!det.keyframe_image;
+      const key = this.previewKey(det.matched_submap ?? -1, det.matched_frame ?? -1, det.query);
+      const cached = this.previewCache.get(key);
+      const imageB64 = cached?.keyframe_image ?? det.keyframe_image;
 
       const card = document.createElement('figure');
       card.className = 'agent-context-card agent-context-card--det det-card-clickable';
+      card.dataset.previewKey = key;
       card.innerHTML = `
         <span class="context-type-tag">DET</span>
-        ${hasImage
-          ? `<img src="data:image/jpeg;base64,${det.keyframe_image}" alt="${this.escapeHtml(det.query)}" />`
+        ${imageB64
+          ? `<img src="data:image/jpeg;base64,${imageB64}" alt="${this.escapeHtml(det.query)}" />`
           : `<div class="context-card-placeholder" style="--card-color:${color}">
                <span class="context-card-placeholder-label">${this.escapeHtml(det.query)}</span>
              </div>`}
@@ -544,18 +554,71 @@ export class UIManager {
           <span>${this.escapeHtml(det.query)}</span>
           ${conf ? `<span class="context-card-conf">${conf}</span>` : ''}
         </figcaption>`;
+
       card.addEventListener('click', () => {
-        this.showPreviewLoading(det);
-        this.onDetectionClickCallback?.(det);
+        const hit = this.previewCache.get(key);
+        if (hit) {
+          this.showDetectionPreview(hit);
+        } else {
+          this.showPreviewLoading(det);
+          this.onDetectionClickCallback?.(det);
+        }
       });
       this.detectionResultsList.appendChild(card);
+
+      // Auto-fetch thumbnail if not yet cached or in-flight
+      if (!imageB64 && !this.pendingPreviews.has(key)
+          && det.matched_submap != null && det.matched_frame != null) {
+        this.pendingPreviews.add(key);
+        this.onAutoFetchPreviewCallback?.(det);
+      }
     }
+  }
+
+  /**
+   * Receive a preview response: cache it, update the card thumbnail,
+   * and populate the modal if the user is currently waiting for it.
+   */
+  receivePreviewData(data: DetectionPreview): void {
+    const key = this.previewKey(data.submap_id, data.frame_idx, data.query);
+    if (!data.error) {
+      this.previewCache.set(key, data);
+    }
+    this.pendingPreviews.delete(key);
+
+    // Update card thumbnail in-place
+    if (data.keyframe_image) {
+      const card = this.detectionResultsList.querySelector<HTMLElement>(`[data-preview-key="${key}"]`);
+      if (card) {
+        const placeholder = card.querySelector<HTMLElement>('.context-card-placeholder');
+        if (placeholder) {
+          const img = document.createElement('img');
+          img.src = `data:image/jpeg;base64,${data.keyframe_image}`;
+          img.alt = data.query;
+          placeholder.replaceWith(img);
+        }
+      }
+    }
+
+    // If modal is open waiting for this exact item, populate it now
+    if (this.activePreviewKey === key) {
+      this.showDetectionPreview(data);
+    }
+  }
+
+  private previewKey(submap: number, frame: number, query: string): string {
+    return `${submap}_${frame}_${query}`;
+  }
+
+  onAutoFetchPreview(callback: (det: DetectionResult) => void): void {
+    this.onAutoFetchPreviewCallback = callback;
   }
 
   /**
    * Show preview modal in loading state while images are fetched
    */
   private showPreviewLoading(det: DetectionResult): void {
+    this.activePreviewKey = this.previewKey(det.matched_submap ?? -1, det.matched_frame ?? -1, det.query);
     this.previewTitle.textContent = `"${det.query}" — Submap ${det.matched_submap}, Frame ${det.matched_frame}`;
     this.previewKeyframe.removeAttribute('src');
     this.previewMask.removeAttribute('src');
@@ -569,6 +632,7 @@ export class UIManager {
    * Populate preview modal with received images
    */
   showDetectionPreview(data: DetectionPreview): void {
+    this.activePreviewKey = this.previewKey(data.submap_id, data.frame_idx, data.query);
     this.previewTitle.textContent = `"${data.query}" — Submap ${data.submap_id}, Frame ${data.frame_idx}`;
 
     if (data.keyframe_image) {
@@ -595,6 +659,7 @@ export class UIManager {
    * Close the preview modal
    */
   closePreview(): void {
+    this.activePreviewKey = null;
     this.previewOverlay.classList.add('hidden');
   }
 

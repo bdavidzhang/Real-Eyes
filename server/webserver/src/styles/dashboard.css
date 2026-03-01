@@ -39,9 +39,10 @@ body {
 }
 
 #app {
-  width: 100vw;
+  width: calc(100vw - 380px);
   height: 100vh;
   position: relative;
+  overflow: hidden;
 }
 
 /* Minimal Panel Design */
