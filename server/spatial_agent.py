@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
 import os
 import re
@@ -23,6 +24,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency path
     AgentRuntime = None
     ToolCall = None
+from server.agent.scene_index import SceneIndex
 from server.llm import OpenRouterClient
 
 
@@ -33,7 +35,7 @@ class Mission:
     goal: str
     queries: list[str]
     found: set[str] = field(default_factory=set)
-    status: str = "active"  # active | completed | stalled
+    status: str = "active"  # active | recovering | completed | stalled
     findings: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
     created_at: float = field(default_factory=time.time)
@@ -102,6 +104,9 @@ class SpatialAgent:
         self.tool_timeout_s = float(os.environ.get("SPATIAL_TOOL_TIMEOUT_S", "10.0"))
         self.task_heartbeat_s = float(os.environ.get("SPATIAL_TASK_HEARTBEAT_S", "2.0"))
         self.chat_timeout_s = float(os.environ.get("SPATIAL_CHAT_TIMEOUT_S", "25.0"))
+        self.deep_scan_timeout_s = float(os.environ.get("SPATIAL_DEEP_SCAN_TIMEOUT_S", "60.0"))
+        self.max_deep_scan_workers = int(os.environ.get("SPATIAL_DEEP_SCAN_WORKERS", "2"))
+        self.max_pending_jobs = int(os.environ.get("SPATIAL_MAX_PENDING_JOBS", "8"))
         self.runtime_v2_enabled = os.environ.get("AGENT_RUNTIME_V2_ENABLED", "1").strip().lower() not in {"0", "false", "off"}
         if AgentRuntime is None:
             self.runtime_v2_enabled = False
@@ -121,6 +126,7 @@ class SpatialAgent:
         # Detection tracking
         self.discovered_objects: dict[str, list[dict[str, Any]]] = {}
         self.previous_detection_keys: set[tuple[str, int, int]] = set()
+        self.scene_index = SceneIndex(max_per_query=24)
 
         # User interaction
         self.current_goal: Optional[str] = None
@@ -137,11 +143,91 @@ class SpatialAgent:
         self._submap_count = 0
         self._coverage_estimate = 0.0
         self._active_tasks: dict[str, dict[str, Any]] = {}
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._recent_job_errors: deque[str] = deque(maxlen=8)
+
+        # Tool metadata used for tool-call prompting.
+        self._internal_tool_specs: list[dict[str, Any]] = [
+            {
+                "name": "get_visual_context_summary",
+                "description": "Return compact structured scene context for observe phase.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "max_items": {"type": "integer", "minimum": 1, "maximum": 24},
+                        "include_missions": {"type": "boolean"},
+                    },
+                },
+            },
+            {
+                "name": "request_visual_context_images",
+                "description": "Return selected keyframe bundle (base64) for optional deeper visual review.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "k": {"type": "integer", "minimum": 1, "maximum": 6},
+                        "purpose": {"type": "string"},
+                        "query": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "search_scene_index",
+                "description": "Fast search over already discovered detections. Can auto-schedule deep scan on miss.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 24},
+                        "auto_deep_scan_on_miss": {"type": "boolean"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "start_deep_scan",
+                "description": "Queue a background CLIP+SAM deep scan job for one or more queries.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}},
+                        "mission_id": {"type": "integer"},
+                        "top_k": {"type": "integer", "minimum": 1, "maximum": 8},
+                    },
+                },
+            },
+            {
+                "name": "get_job_status",
+                "description": "Get status/result for an async job.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"job_id": {"type": "string"}},
+                    "required": ["job_id"],
+                },
+            },
+            {
+                "name": "cancel_job",
+                "description": "Request cancellation of an async job.",
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"job_id": {"type": "string"}},
+                    "required": ["job_id"],
+                },
+            },
+        ]
+        self._observe_tool_names = {
+            "get_visual_context_summary",
+            "request_visual_context_images",
+            "search_scene_index",
+            "get_job_status",
+        }
 
         # Thread safety
         self._lock = threading.Lock()
         self._task_lock = threading.Lock()
+        self._job_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=3)
+        self._job_executor = ThreadPoolExecutor(max_workers=max(1, self.max_deep_scan_workers))
         self._runtime = None
         if self.runtime_v2_enabled and AgentRuntime is not None:
             self._runtime = AgentRuntime(
@@ -171,6 +257,7 @@ class SpatialAgent:
 
         try:
             self._submap_count = max(self._submap_count, submap_id + 1)
+            self._refresh_job_states()
             keyframes_b64 = self._extract_keyframes_b64(submap_id)
             if keyframes_b64:
                 self._remember_keyframes(submap_id, keyframes_b64)
@@ -409,6 +496,42 @@ class SpatialAgent:
         layout_result: Optional[dict[str, Any]],
         new_detections: list[dict[str, Any]],
     ) -> Optional[dict[str, Any]]:
+        context = self._build_orchestrator_context(
+            scene_result=scene_result,
+            spotter_result=spotter_result,
+            layout_result=layout_result,
+            new_detections=new_detections,
+        )
+
+        observe_result = self._run_orchestrator_observe(
+            context=context,
+            keyframes_b64=keyframes_b64,
+        )
+        observe_calls = []
+        if isinstance(observe_result, dict):
+            observe_calls = observe_result.get("observe_tool_calls", [])
+            if isinstance(observe_result.get("narrative"), str) and observe_result["narrative"].strip():
+                self._emit_thought(
+                    str(observe_result["narrative"]).strip(),
+                    thought_type="thinking",
+                    subagent="orchestrator",
+                    keyframe_b64=self._latest_keyframe_b64(),
+                )
+        observe_outcomes = self._execute_tool_calls(observe_calls if isinstance(observe_calls, list) else [], phase="observe")
+
+        return self._run_orchestrator_act(
+            context=context,
+            observe_result=observe_result or {},
+            observe_tool_outcomes=observe_outcomes,
+        )
+
+    def _build_orchestrator_context(
+        self,
+        scene_result: Optional[dict[str, Any]],
+        spotter_result: Optional[dict[str, Any]],
+        layout_result: Optional[dict[str, Any]],
+        new_detections: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         missions_summary = [
             {
                 "id": m.id,
@@ -418,35 +541,157 @@ class SpatialAgent:
                 "found": sorted(m.found),
                 "status": m.status,
                 "confidence": m.confidence,
+                "stall_reason": m.stall_reason,
             }
             for m in self.missions.values()
         ]
-        tools_schema = self._runtime.list_tools() if (self.runtime_v2_enabled and self._runtime is not None) else []
+        return {
+            "session_id": self.session_id,
+            "submaps_processed": self._submap_count,
+            "room_type": self.room_type,
+            "scene_description": self.scene_description,
+            "spatial_layout": self.spatial_layout,
+            "goal": self.current_goal or "autonomous exploration",
+            "missions": missions_summary,
+            "objects_discovered": sorted(self.discovered_objects.keys()),
+            "new_detections": new_detections[:12],
+            "scene_analyzer": scene_result if scene_result else "unavailable",
+            "object_spotter": spotter_result if spotter_result else "unavailable",
+            "layout_mapper": layout_result if layout_result else "not run",
+            "scene_index": self.scene_index.summary(max_queries=8),
+        }
 
+    def _list_available_tools(self, observe_only: bool = False) -> list[dict[str, Any]]:
+        internal = []
+        for spec in self._internal_tool_specs:
+            if observe_only and spec.get("name") not in self._observe_tool_names:
+                continue
+            internal.append(spec)
+        runtime_tools = self._runtime.list_tools() if (self.runtime_v2_enabled and self._runtime is not None) else []
+        return internal + runtime_tools
+
+    def _compact_tool_outcomes_for_prompt(self, outcomes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for item in outcomes[:8]:
+            if not isinstance(item, dict):
+                continue
+            payload: dict[str, Any] = {
+                "tool": item.get("tool"),
+                "ok": bool(item.get("ok")),
+            }
+            if item.get("error"):
+                payload["error"] = str(item.get("error"))[:200]
+            data = item.get("data", {})
+            if isinstance(data, dict):
+                reduced: dict[str, Any] = {}
+                for key, value in data.items():
+                    if key == "images" and isinstance(value, list):
+                        reduced["image_count"] = len(value)
+                        if value:
+                            first = value[0]
+                            if isinstance(first, dict):
+                                reduced["first_image_meta"] = {
+                                    "submap_id": first.get("submap_id"),
+                                    "timestamp": first.get("timestamp"),
+                                }
+                        continue
+                    if key in {"detections", "matches"} and isinstance(value, list):
+                        reduced[key] = value[:3]
+                        reduced[f"{key}_count"] = len(value)
+                        continue
+                    if isinstance(value, str):
+                        reduced[key] = value[:240]
+                    elif isinstance(value, list) and len(value) > 12:
+                        reduced[key] = value[:12]
+                    else:
+                        reduced[key] = value
+                payload["data"] = reduced
+            compact.append(payload)
+        return compact
+
+    def _images_from_tool_outcomes(self, outcomes: list[dict[str, Any]], max_images: int = 2) -> list[str]:
+        images: list[str] = []
+        for item in outcomes:
+            if len(images) >= max_images:
+                break
+            if not isinstance(item, dict):
+                continue
+            data = item.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            bundle = data.get("images", [])
+            if not isinstance(bundle, list):
+                continue
+            for row in bundle:
+                if len(images) >= max_images:
+                    break
+                if not isinstance(row, dict):
+                    continue
+                img = row.get("image_b64")
+                if isinstance(img, str) and img:
+                    images.append(img)
+        return images
+
+    def _run_orchestrator_observe(
+        self,
+        context: dict[str, Any],
+        keyframes_b64: list[str],
+    ) -> Optional[dict[str, Any]]:
         system_prompt = (
-            "You are the orchestrator for an autonomous spatial intelligence system. "
-            "You must reason conservatively, avoid hallucinations, and only create practical"
-            " object-search missions grounded in visible scene context. Output strict JSON only."
+            "You are the observe-phase planner for an autonomous spatial intelligence system. "
+            "Only request tools that gather context. Do not create or complete missions in this phase. "
+            "Output strict JSON only."
         )
-
         user_prompt = (
-            "Context:\n"
-            f"- Session: {self.session_id}\n"
-            f"- Submaps processed: {self._submap_count}\n"
-            f"- Room type: {self.room_type}\n"
-            f"- Scene description: {self.scene_description}\n"
-            f"- Spatial layout: {self.spatial_layout}\n"
-            f"- User goal: {self.current_goal or 'autonomous exploration'}\n"
-            f"- Active missions: {json.dumps(missions_summary)}\n"
-            f"- Objects discovered: {json.dumps(list(self.discovered_objects.keys()))}\n"
-            f"- New detections this cycle: {json.dumps(new_detections[:12])}\n"
-            f"- Scene analyzer: {json.dumps(scene_result) if scene_result else 'unavailable'}\n"
-            f"- Object spotter: {json.dumps(spotter_result) if spotter_result else 'unavailable'}\n"
-            f"- Layout mapper: {json.dumps(layout_result) if layout_result else 'not run'}\n"
-            f"- Available tools: {json.dumps(tools_schema)}\n"
+            "Observe context:\n"
+            f"{json.dumps(context)}\n"
+            f"- Available observe tools: {json.dumps(self._list_available_tools(observe_only=True))}\n"
             "\nReturn JSON exactly in this shape:\n"
             "{"
-            "\"narrative\":\"1-3 concise sentences\"," 
+            "\"narrative\":\"1-2 concise lines about what context is missing\","
+            "\"observe_tool_calls\":[{\"name\":\"tool_name\",\"args\":{}}]"
+            "}"
+        )
+        try:
+            parsed, response = self.orchestrator_client.chat_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                images_b64=keyframes_b64[:2],
+                temperature=0.25,
+                max_tokens=512,
+            )
+            if response.degraded:
+                self._emit_thought(
+                    f"LLM fallback active ({response.model}) — observe phase continuing.",
+                    thought_type="thinking",
+                    subagent="orchestrator",
+                )
+            return parsed
+        except Exception as e:
+            print(f"SpatialAgent[{self.session_id}] observe-phase error: {e}")
+            return None
+
+    def _run_orchestrator_act(
+        self,
+        context: dict[str, Any],
+        observe_result: dict[str, Any],
+        observe_tool_outcomes: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        system_prompt = (
+            "You are the act-phase orchestrator for an autonomous spatial intelligence system. "
+            "Use observed tool outputs first, then update missions and choose practical tool calls. "
+            "Prefer fast `search_scene_index` before expensive scan tools. Output strict JSON only."
+        )
+        user_prompt = (
+            "Act context:\n"
+            f"- Base context: {json.dumps(context)}\n"
+            f"- Observe output: {json.dumps(observe_result)}\n"
+            f"- Observe tool outcomes: {json.dumps(self._compact_tool_outcomes_for_prompt(observe_tool_outcomes))}\n"
+            f"- Attached observe images: {len(self._images_from_tool_outcomes(observe_tool_outcomes, max_images=2))}\n"
+            f"- Available tools: {json.dumps(self._list_available_tools(observe_only=False))}\n"
+            "\nReturn JSON exactly in this shape:\n"
+            "{"
+            "\"narrative\":\"1-3 concise sentences\","
             "\"scene_update\":\"updated scene summary\","
             "\"room_type\":\"office|kitchen|bedroom|bathroom|hallway|outdoor|other\","
             "\"new_missions\":[{\"category\":\"Category\",\"goal\":\"Goal\",\"queries\":[\"q1\",\"q2\"]}],"
@@ -456,24 +701,23 @@ class SpatialAgent:
             "\"tool_calls\":[{\"name\":\"tool_name\",\"args\":{}}]"
             "}"
         )
-
         try:
             parsed, response = self.orchestrator_client.chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                images_b64=keyframes_b64[:2],
+                images_b64=self._images_from_tool_outcomes(observe_tool_outcomes, max_images=2),
                 temperature=0.35,
                 max_tokens=1024,
             )
             if response.degraded:
                 self._emit_thought(
-                    f"LLM fallback active ({response.model}) — continuing in degraded mode.",
+                    f"LLM fallback active ({response.model}) — act phase continuing.",
                     thought_type="thinking",
                     subagent="orchestrator",
                 )
             return parsed
         except Exception as e:
-            print(f"SpatialAgent[{self.session_id}] orchestrator error: {e}")
+            print(f"SpatialAgent[{self.session_id}] act-phase error: {e}")
             return None
 
     def _bootstrap_missions_from_spotter(self, spotter_result: Optional[dict[str, Any]]):
@@ -559,7 +803,7 @@ class SpatialAgent:
                 except Exception:
                     continue
                 mission = self.missions.get(mission_id)
-                if mission is None or mission.status != "active":
+                if mission is None or mission.status not in {"active", "recovering"}:
                     continue
                 for query in query_list:
                     q = str(query).strip().lower()
@@ -587,14 +831,17 @@ class SpatialAgent:
         self.scene_history = self.scene_history[-20:]
 
     def _run_single_tool(self, tool_name: str, tool_args: dict[str, Any], mission_id: Optional[int] = None) -> dict[str, Any]:
-        if not self.runtime_v2_enabled or self._runtime is None:
-            return {"ok": False, "tool": tool_name, "error": "runtime_disabled"}
         task = self._start_task("tool_batch", tool_name, mission_id=mission_id)
-        result = self._runtime.execute_tool(
-            tool_name,
-            tool_args,
-            timeout_s=self.tool_timeout_s,
-        )
+        if self._is_internal_tool(tool_name):
+            result = self._run_internal_tool(tool_name, tool_args, mission_id=mission_id)
+        elif self.runtime_v2_enabled and self._runtime is not None:
+            result = self._runtime.execute_tool(
+                tool_name,
+                tool_args,
+                timeout_s=self.tool_timeout_s,
+            )
+        else:
+            result = {"ok": False, "tool": tool_name, "error": "runtime_disabled"}
         if result.get("ok", False):
             self._finish_task(
                 task_id=task["id"],
@@ -616,9 +863,7 @@ class SpatialAgent:
             )
         return result
 
-    def _execute_tool_calls(self, tool_calls: list[Any]):
-        if not self.runtime_v2_enabled or self._runtime is None:
-            return []
+    def _execute_tool_calls(self, tool_calls: list[Any], phase: str = "act"):
         outcomes: list[dict[str, Any]] = []
         executed = 0
         for call in tool_calls:
@@ -640,7 +885,13 @@ class SpatialAgent:
                 if not tool_name or not isinstance(tool_args, dict):
                     continue
 
-            result = self._run_single_tool(tool_name, tool_args)
+            mission_id = None
+            if isinstance(tool_args.get("mission_id"), int):
+                mission_id = int(tool_args["mission_id"])
+            elif isinstance(tool_args.get("query"), str):
+                mission_id = self._find_mission_for_query(str(tool_args["query"]).strip().lower())
+
+            result = self._run_single_tool(tool_name, tool_args, mission_id=mission_id)
             executed += 1
             outcomes.append(result)
 
@@ -678,9 +929,427 @@ class SpatialAgent:
                 for mission in self.missions.values():
                     if mission.status == "completed":
                         continue
-                    if query and query in mission.queries:
-                        self._mark_mission_progress(mission, reason="tool:locate_object_3d")
+                        if query and query in mission.queries:
+                            self._mark_mission_progress(mission, reason="tool:locate_object_3d")
+            elif tool_name == "search_scene_index":
+                if not data.get("found") and data.get("scheduled_deep_scan_job_id"):
+                    self._emit_action(
+                        "deep_scan_scheduled",
+                        f"Scheduled deep scan for {data.get('query')}",
+                        {"job_id": data.get("scheduled_deep_scan_job_id")},
+                    )
+            elif tool_name == "start_deep_scan" and data.get("job_id"):
+                self._emit_action(
+                    "deep_scan_scheduled",
+                    "Background deep scan queued.",
+                    {"job_id": data.get("job_id"), "queries": data.get("queries", [])},
+                )
         return outcomes
+
+    def _is_internal_tool(self, tool_name: str) -> bool:
+        return any(spec.get("name") == tool_name for spec in self._internal_tool_specs)
+
+    def _run_internal_tool(self, tool_name: str, tool_args: dict[str, Any], mission_id: Optional[int]) -> dict[str, Any]:
+        event_id = str(uuid.uuid4())[:12]
+        started = time.time()
+        self._emit_tool_event_payload({"id": event_id, "tool": tool_name, "status": "started", "args": tool_args})
+        try:
+            if tool_name == "get_visual_context_summary":
+                payload = self._tool_get_visual_context_summary(tool_args)
+            elif tool_name == "request_visual_context_images":
+                payload = self._tool_request_visual_context_images(tool_args)
+            elif tool_name == "search_scene_index":
+                payload = self._tool_search_scene_index(tool_args, mission_id=mission_id)
+            elif tool_name == "start_deep_scan":
+                payload = self._tool_start_deep_scan(tool_args, mission_id=mission_id)
+            elif tool_name == "get_job_status":
+                payload = self._tool_get_job_status(tool_args)
+            elif tool_name == "cancel_job":
+                payload = self._tool_cancel_job(tool_args)
+            else:
+                raise RuntimeError(f"Unknown internal tool: {tool_name}")
+
+            elapsed = int((time.time() - started) * 1000)
+            self._emit_tool_event_payload(
+                {
+                    "id": event_id,
+                    "tool": tool_name,
+                    "status": "succeeded",
+                    "result": payload,
+                    "latency_ms": elapsed,
+                }
+            )
+            return {"ok": True, "tool": tool_name, "data": payload, "latency_ms": elapsed}
+        except Exception as exc:
+            elapsed = int((time.time() - started) * 1000)
+            self._emit_tool_event_payload(
+                {
+                    "id": event_id,
+                    "tool": tool_name,
+                    "status": "failed",
+                    "error": str(exc),
+                    "latency_ms": elapsed,
+                }
+            )
+            return {"ok": False, "tool": tool_name, "error": str(exc), "latency_ms": elapsed}
+
+    def _tool_get_visual_context_summary(self, args: dict[str, Any]) -> dict[str, Any]:
+        max_items = max(1, min(24, int(args.get("max_items", 8))))
+        include_missions = bool(args.get("include_missions", True))
+        unresolved_queries: list[str] = []
+        missions = []
+        if include_missions:
+            for mission in self.missions.values():
+                missions.append(
+                    {
+                        "id": mission.id,
+                        "goal": mission.goal,
+                        "status": mission.status,
+                        "queries": mission.queries,
+                        "found": sorted(mission.found),
+                        "stall_reason": mission.stall_reason,
+                    }
+                )
+                if mission.status in {"active", "recovering"}:
+                    for q in mission.queries:
+                        if q not in mission.found and q not in unresolved_queries:
+                            unresolved_queries.append(q)
+
+        recent_observations = []
+        for item in list(self.visual_memory)[-max_items:]:
+            recent_observations.append(
+                {
+                    "submap_id": item.get("submap_id"),
+                    "timestamp": item.get("timestamp"),
+                }
+            )
+        with self._job_lock:
+            running_jobs = sum(1 for j in self._jobs.values() if j.get("status") == "running")
+            queued_jobs = sum(1 for j in self._jobs.values() if j.get("status") == "queued")
+
+        return {
+            "session_id": self.session_id,
+            "room_type": self.room_type,
+            "scene_description": self.scene_description,
+            "spatial_layout": self.spatial_layout,
+            "submaps_processed": self._submap_count,
+            "coverage_estimate": round(float(self._coverage_estimate), 3),
+            "active_queries": list(self.all_active_queries),
+            "unresolved_queries": unresolved_queries[:max_items],
+            "discovered_objects": sorted(self.discovered_objects.keys())[:max_items],
+            "scene_index": self.scene_index.summary(max_queries=max_items),
+            "job_queue": {"running": running_jobs, "queued": queued_jobs},
+            "recent_observations": recent_observations,
+            "missions": missions[:max_items] if include_missions else [],
+            "explanation_for_model": (
+                "Use unresolved_queries and scene_index first. "
+                "Request visual images only when ambiguity remains."
+            ),
+        }
+
+    def _tool_request_visual_context_images(self, args: dict[str, Any]) -> dict[str, Any]:
+        k = max(1, min(6, int(args.get("k", 2))))
+        purpose = str(args.get("purpose", "") or "").strip()
+        query = str(args.get("query", "") or "").strip().lower()
+
+        preferred_submaps: set[int] = set()
+        if query:
+            for match in self.scene_index.search(query, max_results=8):
+                preferred_submaps.add(int(match.get("matched_submap", -1)))
+
+        selected: list[dict[str, Any]] = []
+        seen = set()
+        for item in reversed(self.visual_memory):
+            img = item.get("image_b64")
+            submap_id = int(item.get("submap_id", -1))
+            if not img or img in seen:
+                continue
+            if preferred_submaps and submap_id not in preferred_submaps:
+                continue
+            selected.append(
+                {
+                    "submap_id": submap_id,
+                    "timestamp": item.get("timestamp"),
+                    "image_b64": img,
+                }
+            )
+            seen.add(img)
+            if len(selected) >= k:
+                break
+
+        if not selected:
+            for item in reversed(self.visual_memory):
+                img = item.get("image_b64")
+                if not img or img in seen:
+                    continue
+                selected.append(
+                    {
+                        "submap_id": int(item.get("submap_id", -1)),
+                        "timestamp": item.get("timestamp"),
+                        "image_b64": img,
+                    }
+                )
+                seen.add(img)
+                if len(selected) >= k:
+                    break
+
+        return {
+            "bundle_id": str(uuid.uuid4())[:12],
+            "purpose": purpose or None,
+            "query": query or None,
+            "images": selected,
+            "count": len(selected),
+            "explanation_for_model": (
+                "These are recent keyframes selected for extra context. "
+                "Use them to refine query updates and scan priorities."
+            ),
+        }
+
+    def _tool_search_scene_index(self, args: dict[str, Any], mission_id: Optional[int]) -> dict[str, Any]:
+        query = str(args.get("query", "") or "").strip().lower()
+        if not query:
+            raise RuntimeError("query is required")
+        max_results = max(1, min(24, int(args.get("max_results", 8))))
+        auto_deep_scan = bool(args.get("auto_deep_scan_on_miss", True))
+        matches = self.scene_index.search(query, max_results=max_results)
+        payload = {
+            "query": query,
+            "found": len(matches) > 0,
+            "matches": matches,
+            "count": len(matches),
+        }
+        if not matches and auto_deep_scan:
+            scheduled = self._enqueue_deep_scan([query], mission_id=mission_id, top_k=3)
+            if scheduled is not None:
+                payload["scheduled_deep_scan_job_id"] = scheduled["job_id"]
+        return payload
+
+    def _tool_start_deep_scan(self, args: dict[str, Any], mission_id: Optional[int]) -> dict[str, Any]:
+        raw_queries = args.get("queries", [])
+        queries = self._normalize_queries_for_tools(raw_queries if isinstance(raw_queries, list) else [raw_queries])
+        if not queries:
+            raise RuntimeError("queries cannot be empty")
+        resolved_mission_id = mission_id
+        if args.get("mission_id") is not None:
+            try:
+                resolved_mission_id = int(args.get("mission_id"))
+            except Exception:
+                pass
+        top_k = max(1, min(8, int(args.get("top_k", 3))))
+        scheduled = self._enqueue_deep_scan(queries, mission_id=resolved_mission_id, top_k=top_k)
+        if scheduled is None:
+            raise RuntimeError("job_queue_full")
+        return {
+            "job_id": scheduled["job_id"],
+            "status": scheduled["status"],
+            "queries": queries,
+            "mission_id": resolved_mission_id,
+            "top_k": top_k,
+        }
+
+    def _tool_get_job_status(self, args: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(args.get("job_id", "") or "").strip()
+        if not job_id:
+            raise RuntimeError("job_id is required")
+        self._refresh_job_states()
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+        if job is None:
+            return {"job_id": job_id, "status": "not_found"}
+        return self._serialize_job(job, include_result=True)
+
+    def _tool_cancel_job(self, args: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(args.get("job_id", "") or "").strip()
+        if not job_id:
+            raise RuntimeError("job_id is required")
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return {"job_id": job_id, "status": "not_found"}
+            future = job.get("future")
+            status = str(job.get("status"))
+            if status in {"succeeded", "failed", "timed_out", "canceled"}:
+                return {"job_id": job_id, "status": status, "canceled": False}
+            canceled = bool(future.cancel()) if future is not None else False
+            job["status"] = "canceled" if canceled else "running"
+            job["finished_at"] = time.time() if canceled else None
+        if canceled:
+            self._emit_job_event(job)
+        return {"job_id": job_id, "status": job["status"], "canceled": canceled}
+
+    def _normalize_queries_for_tools(self, raw: list[Any], max_count: int = 12) -> list[str]:
+        out: list[str] = []
+        for item in raw:
+            q = str(item or "").strip().lower()
+            if not q:
+                continue
+            if len(q) > 120:
+                q = q[:120]
+            if q not in out:
+                out.append(q)
+            if len(out) >= max_count:
+                break
+        return out
+
+    def _enqueue_deep_scan(self, queries: list[str], mission_id: Optional[int], top_k: int) -> Optional[dict[str, Any]]:
+        now = time.time()
+        with self._job_lock:
+            active_jobs = [j for j in self._jobs.values() if j.get("status") in {"queued", "running"}]
+            if len(active_jobs) >= self.max_pending_jobs:
+                return None
+
+            normalized = tuple(sorted(queries))
+            for job in active_jobs:
+                if job.get("name") == "deep_scan" and tuple(job.get("query_signature", ())) == normalized:
+                    return {"job_id": job["job_id"], "status": job["status"], "deduped": True}
+
+            job_id = str(uuid.uuid4())[:12]
+            job = {
+                "job_id": job_id,
+                "name": "deep_scan",
+                "status": "queued",
+                "args": {"queries": list(queries), "top_k": int(top_k)},
+                "query_signature": normalized,
+                "mission_id": mission_id,
+                "created_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+                "timeout_s": float(self.deep_scan_timeout_s),
+                "future": None,
+            }
+            self._jobs[job_id] = job
+            self._emit_job_event(job)
+
+            future = self._job_executor.submit(self._deep_scan_worker, list(queries), int(top_k))
+            job["future"] = future
+            job["status"] = "running"
+            job["started_at"] = time.time()
+            self._emit_job_event(job)
+            future.add_done_callback(lambda fut, jid=job_id: self._on_deep_scan_done(jid, fut))
+            return {"job_id": job_id, "status": "running"}
+
+    def _deep_scan_worker(self, queries: list[str], top_k: int) -> dict[str, Any]:
+        report = self.slam.debug_detect_full(queries, top_k=top_k, include_frames=False)
+        detections = report.get("detections", []) if isinstance(report, dict) else []
+        return {
+            "queries": list(queries),
+            "count": len(detections) if isinstance(detections, list) else 0,
+            "detections": detections if isinstance(detections, list) else [],
+            "query_time_ms": int(report.get("query_time_ms", 0)) if isinstance(report, dict) else 0,
+        }
+
+    def _on_deep_scan_done(self, job_id: str, future: concurrent.futures.Future):
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            if str(job.get("status")) == "timed_out":
+                return
+            job["finished_at"] = time.time()
+
+        try:
+            result = future.result()
+            with self._job_lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                job["status"] = "succeeded"
+                job["result"] = result
+            self._emit_job_event(job)
+            self._executor.submit(self._apply_deep_scan_result, job_id, result)
+        except concurrent.futures.CancelledError:
+            with self._job_lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                job["status"] = "canceled"
+                job["error"] = "job canceled"
+            self._emit_job_event(job)
+        except Exception as exc:
+            with self._job_lock:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                job["status"] = "failed"
+                job["error"] = str(exc)
+                self._recent_job_errors.append(str(exc))
+            self._emit_job_event(job)
+
+    def _apply_deep_scan_result(self, job_id: str, result: dict[str, Any]):
+        detections = result.get("detections", []) if isinstance(result, dict) else []
+        if isinstance(detections, list) and detections:
+            self._route_detections(detections)
+            self._emit_action(
+                "deep_scan_completed",
+                f"Deep scan {job_id} found {len(detections)} detections.",
+                {"job_id": job_id},
+            )
+        else:
+            self._emit_action(
+                "deep_scan_completed",
+                f"Deep scan {job_id} completed with no detections.",
+                {"job_id": job_id},
+            )
+        self._emit_state()
+
+    def _refresh_job_states(self):
+        now = time.time()
+        timed_out: list[dict[str, Any]] = []
+        with self._job_lock:
+            for job in self._jobs.values():
+                if job.get("status") != "running":
+                    continue
+                started = job.get("started_at")
+                timeout_s = float(job.get("timeout_s", self.deep_scan_timeout_s))
+                if started is None or (now - float(started)) < timeout_s:
+                    continue
+                future = job.get("future")
+                if future is not None:
+                    future.cancel()
+                job["status"] = "timed_out"
+                job["finished_at"] = now
+                job["error"] = f"timed out after {int(timeout_s)}s"
+                timed_out.append(dict(job))
+            if len(self._jobs) > 128:
+                terminal = sorted(
+                    [j for j in self._jobs.values() if j.get("status") in {"succeeded", "failed", "timed_out", "canceled"}],
+                    key=lambda x: float(x.get("finished_at") or x.get("created_at") or 0.0),
+                )
+                for old in terminal[: max(0, len(self._jobs) - 96)]:
+                    self._jobs.pop(str(old.get("job_id")), None)
+        for job in timed_out:
+            self._recent_job_errors.append(str(job.get("error")))
+            self._emit_job_event(job)
+
+    def _serialize_job(self, job: dict[str, Any], include_result: bool = False) -> dict[str, Any]:
+        payload = {
+            "job_id": job.get("job_id"),
+            "job_name": job.get("name"),
+            "status": job.get("status"),
+            "mission_id": job.get("mission_id"),
+            "args": job.get("args"),
+            "error": job.get("error"),
+            "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+        }
+        if include_result:
+            payload["result"] = job.get("result")
+        else:
+            result = job.get("result")
+            if isinstance(result, dict):
+                payload["result"] = {k: result.get(k) for k in ("count", "queries", "query_time_ms")}
+        return payload
+
+    def _emit_job_event(self, job: dict[str, Any]):
+        payload = self._serialize_job(job, include_result=False)
+        payload["id"] = str(uuid.uuid4())[:12]
+        try:
+            self.emit("agent_job_event", payload)
+        except Exception as e:
+            print(f"SpatialAgent[{self.session_id}] emit job event error: {e}")
 
     # ------------------------------------------------------------------
     # User interaction
@@ -705,7 +1374,7 @@ class SpatialAgent:
             return None
 
         if any(phrase in lower for phrase in ("what are you doing", "status", "missions", "progress")):
-            active = sum(1 for m in self.missions.values() if m.status == "active")
+            active = sum(1 for m in self.missions.values() if m.status in {"active", "recovering"})
             stalled = sum(1 for m in self.missions.values() if m.status == "stalled")
             completed = sum(1 for m in self.missions.values() if m.status == "completed")
             return (
@@ -738,18 +1407,17 @@ class SpatialAgent:
                     query_source = query_source.split(prefix, 1)[1]
                     break
             queries = self._parse_query_candidates(query_source)
-            if queries and self._runtime is not None:
+            if queries:
                 query = queries[0]
                 locate = self._run_single_tool("locate_object_3d", {"query": query})
                 if locate.get("ok") and locate.get("data", {}).get("found"):
                     return f"I located {query} and focused it in the UI."
-                search = self._run_single_tool("search_objects", {"queries": [query], "max_results": 10})
+                search = self._run_single_tool("search_scene_index", {"query": query, "max_results": 8})
                 data = search.get("data", {})
-                detections = data.get("detections", []) if isinstance(data, dict) else []
-                if isinstance(detections, list) and detections:
-                    self._route_detections(detections)
-                    return f"I ran a targeted search and found {query}."
-                return f"I could not confirm {query} yet; I will keep scanning."
+                matches = data.get("matches", []) if isinstance(data, dict) else []
+                if isinstance(matches, list) and matches:
+                    return f"I found likely matches for {query} in the indexed scene data."
+                return f"I queued a deeper scan for {query}; I will update you when it completes."
 
         return None
 
@@ -785,6 +1453,8 @@ class SpatialAgent:
             f"- Layout: {self.spatial_layout}\n"
             f"- Objects: {json.dumps(list(self.discovered_objects.keys()))}\n"
             f"- Missions: {json.dumps(missions_summary)}\n"
+            f"- Scene index: {json.dumps(self.scene_index.summary(max_queries=8))}\n"
+            f"- Available tools: {json.dumps(self._list_available_tools(observe_only=False))}\n"
             f"- Goal: {self.current_goal or 'none'}\n"
             f"- Recent chat: {json.dumps(self.chat_history[-6:])}\n"
             f"\nUser message: {message}\n\n"
@@ -933,7 +1603,7 @@ class SpatialAgent:
     def _mark_mission_progress(self, mission: Mission, reason: str):
         mission.submaps_since_finding = 0
         mission.last_progress_ts = time.time()
-        if mission.status == "stalled":
+        if mission.status in {"stalled", "recovering"}:
             mission.status = "active"
             mission.stall_reason = None
             self._emit_task_event(
@@ -971,9 +1641,69 @@ class SpatialAgent:
                 {"mission_id": mission.id},
             )
 
+    def _attempt_mission_recovery(self, mission: Mission, reason: str):
+        if mission.status == "completed":
+            return
+        missing = [q for q in mission.queries if q not in mission.found]
+        if not missing:
+            return
+        rewritten = self._rewrite_queries_for_recovery(missing)
+        added = 0
+        for q in rewritten:
+            if q not in mission.queries:
+                mission.queries.append(q)
+                added += 1
+        mission.status = "recovering"
+        mission.stall_reason = reason
+        mission.stall_count += 1
+        self._emit_task_event(
+            {
+                "id": str(uuid.uuid4())[:12],
+                "timestamp": time.time(),
+                "task_type": "mission",
+                "name": "mission_status",
+                "status": "stalled",
+                "mission_id": mission.id,
+                "details": f"{reason}; rewritten={added}",
+            }
+        )
+        self._emit_action(
+            "mission_recovering",
+            f"Recovering: {mission.category} ({reason})",
+            {"mission_id": mission.id, "added_queries": rewritten[:6]},
+        )
+        self._enqueue_deep_scan(missing[:4], mission_id=mission.id, top_k=3)
+
+    @staticmethod
+    def _rewrite_queries_for_recovery(queries: list[str]) -> list[str]:
+        rewritten: list[str] = []
+        alias_map: dict[str, list[str]] = {
+            "sofa": ["couch"],
+            "couch": ["sofa"],
+            "tv": ["television", "monitor"],
+            "trash can": ["bin", "garbage can"],
+            "fridge": ["refrigerator"],
+            "sink": ["faucet"],
+            "microwave": ["oven"],
+            "chair": ["seat"],
+        }
+        for q in queries:
+            qn = str(q).strip().lower()
+            if not qn:
+                continue
+            variants = [f"{qn} object", f"{qn} item"]
+            for alias in alias_map.get(qn, []):
+                variants.append(alias)
+                variants.append(f"{alias} object")
+            for v in variants:
+                if v not in rewritten:
+                    rewritten.append(v[:120])
+        return rewritten[:8]
+
     def _update_mission_stall_states(self):
+        changed = False
         for mission in self.missions.values():
-            if mission.status != "active":
+            if mission.status not in {"active", "recovering"}:
                 continue
             if mission.submaps_since_finding < self.stall_submap_gap:
                 continue
@@ -984,13 +1714,19 @@ class SpatialAgent:
                     f"Completed: {mission.category} ({len(mission.found)}/{len(mission.queries)})",
                     {"mission_id": mission.id},
                 )
+                changed = True
                 continue
-            self._stall_mission(
+            self._attempt_mission_recovery(
                 mission,
                 reason=f"no_progress_for_{mission.submaps_since_finding}_submaps",
             )
+            changed = True
+        if changed:
+            self._sync_detection_queries(force=True)
 
     def _route_detections(self, new_detections: list[dict[str, Any]]):
+        if new_detections:
+            self.scene_index.ingest(new_detections)
         for det in new_detections:
             query = str(det.get("query", "")).strip().lower()
             if not query:
@@ -1059,10 +1795,10 @@ class SpatialAgent:
                 )
         self._update_mission_stall_states()
 
-    def _sync_detection_queries(self):
+    def _sync_detection_queries(self, force: bool = False):
         active_queries: list[str] = []
         for mission in self.missions.values():
-            if mission.status != "active":
+            if mission.status not in {"active", "recovering"}:
                 continue
             for q in mission.queries:
                 q_norm = q.strip().lower()
@@ -1074,7 +1810,7 @@ class SpatialAgent:
             return
 
         now = time.time()
-        if now - self._last_query_sync_ts < self.query_update_cooldown_s:
+        if (not force) and (now - self._last_query_sync_ts < self.query_update_cooldown_s):
             return
 
         self._last_query_sync_ts = now
@@ -1098,6 +1834,7 @@ class SpatialAgent:
     # ------------------------------------------------------------------
 
     def get_state(self) -> dict[str, Any]:
+        self._refresh_job_states()
         missions_list = [
             {
                 "id": m.id,
@@ -1117,6 +1854,10 @@ class SpatialAgent:
 
         with self._task_lock:
             active_tasks = list(self._active_tasks.values())
+        with self._job_lock:
+            all_jobs = [self._serialize_job(j, include_result=False) for j in self._jobs.values()]
+        pending_jobs = [j for j in all_jobs if j.get("status") == "queued"]
+        running_jobs = [j for j in all_jobs if j.get("status") == "running"]
         return {
             "enabled": self.enabled,
             "scene_description": self.scene_description,
@@ -1131,6 +1872,9 @@ class SpatialAgent:
             "degraded_mode": self.orchestrator_client.degraded_mode,
             "runtime_v2_enabled": self.runtime_v2_enabled,
             "active_tasks": active_tasks,
+            "pending_jobs": pending_jobs,
+            "running_jobs": running_jobs,
+            "last_job_errors": list(self._recent_job_errors),
             "orchestrator_busy": any(
                 task.get("task_type") == "orchestrator" for task in active_tasks
             ),
@@ -1146,6 +1890,7 @@ class SpatialAgent:
             self.next_mission_id = 1
             self.all_active_queries.clear()
             self.discovered_objects.clear()
+            self.scene_index.clear()
             self.previous_detection_keys.clear()
             self.current_goal = None
             self.chat_history.clear()
@@ -1157,6 +1902,13 @@ class SpatialAgent:
             self._last_cycle_ts = 0.0
             with self._task_lock:
                 self._active_tasks.clear()
+            with self._job_lock:
+                for job in self._jobs.values():
+                    future = job.get("future")
+                    if future is not None:
+                        future.cancel()
+                self._jobs.clear()
+            self._recent_job_errors.clear()
 
         if self.on_queries_changed is not None:
             try:
@@ -1171,6 +1923,7 @@ class SpatialAgent:
                 self._runtime.close()
             except Exception:
                 pass
+        self._job_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
@@ -1222,6 +1975,12 @@ class SpatialAgent:
             self.emit("agent_task_event", payload)
         except Exception as e:
             print(f"SpatialAgent[{self.session_id}] emit task event error: {e}")
+
+    def _emit_tool_event_payload(self, payload: dict[str, Any]):
+        try:
+            self.emit("agent_tool_event", payload)
+        except Exception as e:
+            print(f"SpatialAgent[{self.session_id}] emit tool event error: {e}")
 
     def _emit_finding(
         self,

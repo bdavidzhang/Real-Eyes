@@ -64,6 +64,20 @@ class AgentToolEvent(StrictModel):
     latency_ms: Optional[int] = None
 
 
+class AgentJobEvent(StrictModel):
+    id: str = Field(min_length=4, max_length=64)
+    job_name: str = Field(min_length=1, max_length=128)
+    status: Literal["queued", "running", "succeeded", "failed", "timed_out", "canceled"]
+    mission_id: Optional[int] = None
+    args: Optional[dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    progress: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    created_at: Optional[float] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+
+
 # ------------------------------------------------------------------
 # VGGT-backed tool args
 # ------------------------------------------------------------------
@@ -95,6 +109,37 @@ class InferSpatialRelationsArgs(StrictModel):
 class ProposeNextScanFocusArgs(StrictModel):
     goal: Optional[str] = Field(default=None, max_length=300)
     max_queries: int = Field(default=4, ge=1, le=10)
+
+
+class GetVisualContextSummaryArgs(StrictModel):
+    max_items: int = Field(default=8, ge=1, le=24)
+    include_missions: bool = True
+
+
+class RequestVisualContextImagesArgs(StrictModel):
+    k: int = Field(default=2, ge=1, le=6)
+    purpose: Optional[str] = Field(default=None, max_length=180)
+    query: Optional[str] = Field(default=None, max_length=120)
+
+
+class SearchSceneIndexArgs(StrictModel):
+    query: str = Field(min_length=1, max_length=120)
+    max_results: int = Field(default=8, ge=1, le=24)
+    auto_deep_scan_on_miss: bool = True
+
+
+class StartDeepScanArgs(StrictModel):
+    queries: list[str] = Field(default_factory=list, max_length=12)
+    mission_id: Optional[int] = Field(default=None, ge=1)
+    top_k: int = Field(default=3, ge=1, le=8)
+
+
+class GetJobStatusArgs(StrictModel):
+    job_id: str = Field(min_length=6, max_length=64)
+
+
+class CancelJobArgs(StrictModel):
+    job_id: str = Field(min_length=6, max_length=64)
 
 
 # ------------------------------------------------------------------

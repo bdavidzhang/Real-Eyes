@@ -163,7 +163,7 @@ export interface MissionState {
   goal: string;
   queries: string[];
   found: string[];
-  status: 'active' | 'completed' | 'stalled';
+  status: 'active' | 'recovering' | 'completed' | 'stalled';
   confidence: number;
   findings_count: number;
   last_progress_ts?: number;
@@ -200,6 +200,9 @@ export interface AgentState {
   degraded_mode?: boolean;
   runtime_v2_enabled?: boolean;
   active_tasks?: AgentTaskState[];
+  pending_jobs?: AgentJobEvent[];
+  running_jobs?: AgentJobEvent[];
+  last_job_errors?: string[];
   orchestrator_busy?: boolean;
 }
 
@@ -238,4 +241,18 @@ export interface AgentToolEvent {
   result?: Record<string, unknown>;
   error?: string;
   latency_ms?: number;
+}
+
+export interface AgentJobEvent {
+  id?: string;
+  job_id: string;
+  job_name: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'canceled' | 'not_found';
+  mission_id?: number;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string;
+  created_at?: number;
+  started_at?: number;
+  finished_at?: number;
 }

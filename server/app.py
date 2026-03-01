@@ -233,6 +233,9 @@ def _build_agent_state_payload(sid: str) -> dict[str, Any]:
             "health": "disabled",
             "degraded_mode": False,
             "active_tasks": [],
+            "pending_jobs": [],
+            "running_jobs": [],
+            "last_job_errors": [],
             "orchestrator_busy": False,
         }
 

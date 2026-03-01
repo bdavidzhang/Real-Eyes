@@ -280,6 +280,10 @@ class SLAMViewerApp {
       this.agentPanel.handleTaskEvent(data);
     });
 
+    this.connection.onAgentJobEvent((data) => {
+      this.agentPanel.handleJobEvent(data);
+    });
+
     this.connection.onAgentUICommand((cmd) => {
       this.agentPanel.handleUICommand(cmd);
       void this.handleAgentUICommand(cmd);

@@ -489,6 +489,10 @@
   border-color: rgba(255, 189, 93, 0.3);
 }
 
+.agent-mission-card.mission-recovering {
+  border-color: rgba(255, 214, 120, 0.45);
+}
+
 .agent-mission-card.mission-completed {
   border-color: rgba(117, 243, 198, 0.32);
   opacity: 0.86;

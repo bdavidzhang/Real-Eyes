@@ -761,7 +761,7 @@ class StreamingSLAM:
     # Debug detection — full pipeline with rich per-frame diagnostics
     # ------------------------------------------------------------------
 
-    def debug_detect_full(self, queries, clip_thresholds=None, sam_thresholds=None, top_k=None):
+    def debug_detect_full(self, queries, clip_thresholds=None, sam_thresholds=None, top_k=None, include_frames=True):
         """Run the full detection pipeline and return rich per-frame diagnostics.
 
         Does NOT touch _sam_cache or accumulated_detections — purely diagnostic.
@@ -779,6 +779,7 @@ class StreamingSLAM:
         effective_top_k = top_k if (top_k is not None and top_k > 0) else self.SAM_TOP_K_FRAMES
 
         all_frames_diag = []
+        total_frame_count = 0
         # Maps (submap_id, frame_idx, query) -> mask diag list for dedup
         key_to_masks = {}
 
@@ -826,6 +827,7 @@ class StreamingSLAM:
                 clip_rank_map = {fi: rank + 1 for rank, (_, fi) in enumerate(scored)}
 
                 for frame_idx in range(last_orig + 1):
+                    total_frame_count += 1
                     sim_val = sims[frame_idx].item()
                     above = sim_val >= clip_thresh
                     in_top_k = frame_idx in top_k_set
@@ -834,19 +836,20 @@ class StreamingSLAM:
                     # Thumbnail for all frames (cheap)
                     thumbnail = None
                     resolution = None
-                    try:
-                        frame_tensor = submap.get_frame_at_index(frame_idx)
-                        frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-                        h, w = frame_np.shape[:2]
-                        resolution = f"{w}×{h}"
-                        thumb_h = 120
-                        thumb_w = int(w * thumb_h / h)
-                        thumb = cv2.resize(frame_np, (thumb_w, thumb_h))
-                        thumb_bgr = cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR)
-                        _, buf = cv2.imencode('.jpg', thumb_bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                        thumbnail = base64.b64encode(buf.tobytes()).decode('ascii')
-                    except Exception:
-                        pass
+                    if include_frames:
+                        try:
+                            frame_tensor = submap.get_frame_at_index(frame_idx)
+                            frame_np = (frame_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                            h, w = frame_np.shape[:2]
+                            resolution = f"{w}×{h}"
+                            thumb_h = 120
+                            thumb_w = int(w * thumb_h / h)
+                            thumb = cv2.resize(frame_np, (thumb_w, thumb_h))
+                            thumb_bgr = cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR)
+                            _, buf = cv2.imencode('.jpg', thumb_bgr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                            thumbnail = base64.b64encode(buf.tobytes()).decode('ascii')
+                        except Exception:
+                            pass
 
                     sam_masks_diag = []
                     sam_error = None
@@ -875,10 +878,11 @@ class StreamingSLAM:
                                         pass
 
                                 mask_image = None
-                                try:
-                                    mask_image = ObjectDetector.mask_overlay_to_base64(frame_np, mask_2d)
-                                except Exception:
-                                    pass
+                                if include_frames:
+                                    try:
+                                        mask_image = ObjectDetector.mask_overlay_to_base64(frame_np, mask_2d)
+                                    except Exception:
+                                        pass
 
                                 mask_entry = {
                                     'score': float(seg_score),
@@ -898,24 +902,25 @@ class StreamingSLAM:
                         except Exception as e:
                             sam_error = str(e)
 
-                    all_frames_diag.append({
-                        'submap_id': submap_id,
-                        'frame_idx': frame_idx,
-                        'query': query,
-                        'clip_similarity': float(sim_val),
-                        'clip_rank': rank,
-                        'above_threshold': above,
-                        'in_top_k': in_top_k,
-                        'sam_skipped': sam_skipped,
-                        'clip_threshold_used': clip_thresh,
-                        'sam_threshold_used': sam_thresh,
-                        'top_k_used': effective_top_k,
-                        'thumbnail': thumbnail,
-                        'resolution': resolution,
-                        'sam_masks': sam_masks_diag,
-                        'sam_error': sam_error,
-                        'detections_before_dedup': [],
-                    })
+                    if include_frames:
+                        all_frames_diag.append({
+                            'submap_id': submap_id,
+                            'frame_idx': frame_idx,
+                            'query': query,
+                            'clip_similarity': float(sim_val),
+                            'clip_rank': rank,
+                            'above_threshold': above,
+                            'in_top_k': in_top_k,
+                            'sam_skipped': sam_skipped,
+                            'clip_threshold_used': clip_thresh,
+                            'sam_threshold_used': sam_thresh,
+                            'top_k_used': effective_top_k,
+                            'thumbnail': thumbnail,
+                            'resolution': resolution,
+                            'sam_masks': sam_masks_diag,
+                            'sam_error': sam_error,
+                            'detections_before_dedup': [],
+                        })
 
         # Build raw detections and deduplicate using combined score
         raw_detections = []
@@ -943,12 +948,13 @@ class StreamingSLAM:
                     m['dedup_kept'] = kept
 
         # Populate detections_before_dedup on frame diag entries
-        raw_by_key = {}
-        for r in raw_detections:
-            raw_by_key.setdefault((r['matched_submap'], r['matched_frame'], r['query']), []).append(r)
-        for fd in all_frames_diag:
-            k = (fd['submap_id'], fd['frame_idx'], fd['query'])
-            fd['detections_before_dedup'] = raw_by_key.get(k, [])
+        if include_frames:
+            raw_by_key = {}
+            for r in raw_detections:
+                raw_by_key.setdefault((r['matched_submap'], r['matched_frame'], r['query']), []).append(r)
+            for fd in all_frames_diag:
+                k = (fd['submap_id'], fd['frame_idx'], fd['query'])
+                fd['detections_before_dedup'] = raw_by_key.get(k, [])
 
         elapsed_ms = int((_time.time() - t0) * 1000)
         return {
@@ -956,11 +962,11 @@ class StreamingSLAM:
             'clip_thresholds': clip_thresh_map,
             'sam_thresholds': sam_thresh_map,
             'top_k': effective_top_k,
-            'frames': all_frames_diag,
+            'frames': all_frames_diag if include_frames else [],
             'raw_detection_count': len(raw_detections),
             'deduped_detection_count': len(deduped),
             'detections': deduped,
-            'total_frames_scanned': len(all_frames_diag),
+            'total_frames_scanned': total_frame_count,
             'query_time_ms': elapsed_ms,
         }
 

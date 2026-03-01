@@ -7,6 +7,7 @@ import type {
   AgentTaskEvent,
   AgentUICommand,
   AgentUIResult,
+  AgentJobEvent,
   MissionState,
   AgentTaskState,
 } from '../types';
@@ -263,6 +264,19 @@ export class AgentPanel {
         : undefined;
     const content = data.error ?? data.details ?? '';
     const entry = this.buildEntry('task', `Task · ${data.name} · ${data.status}`, content, ts, statusClass);
+    this.addToFeed(entry, 'task');
+  }
+
+  handleJobEvent(data: AgentJobEvent): void {
+    const ts = this.formatTime(Date.now() / 1000);
+    const statusClass =
+      data.status === 'succeeded'
+        ? 'task-succeeded'
+        : data.status === 'failed' || data.status === 'timed_out'
+        ? `task-${data.status}`
+        : undefined;
+    const detail = data.error ?? (data.result ? JSON.stringify(data.result).slice(0, 120) : '');
+    const entry = this.buildEntry('task', `Job · ${data.job_name} · ${data.status}`, detail, ts, statusClass);
     this.addToFeed(entry, 'task');
   }
 

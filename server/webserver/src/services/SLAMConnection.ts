@@ -12,6 +12,7 @@ import type {
   AgentUIResult,
   AgentToolEvent,
   AgentTaskEvent,
+  AgentJobEvent,
 } from '../types';
 
 /**
@@ -43,6 +44,7 @@ export class SLAMConnection {
   private onAgentUICommandCallback?: (data: AgentUICommand) => void;
   private onAgentToolEventCallback?: (data: AgentToolEvent) => void;
   private onAgentTaskEventCallback?: (data: AgentTaskEvent) => void;
+  private onAgentJobEventCallback?: (data: AgentJobEvent) => void;
 
   constructor(serverUrl: string) {
     this.serverUrl = serverUrl;
@@ -308,6 +310,10 @@ export class SLAMConnection {
       this.onAgentTaskEventCallback?.(data);
     });
 
+    this.socket.on('agent_job_event', (data: AgentJobEvent) => {
+      this.onAgentJobEventCallback?.(data);
+    });
+
     this.socket.on('connect_error', (error) => {
       console.error('❌ Connection error:', error);
       this.reconnectAttempts++;
@@ -351,6 +357,10 @@ export class SLAMConnection {
 
   onAgentTaskEvent(callback: (data: AgentTaskEvent) => void): void {
     this.onAgentTaskEventCallback = callback;
+  }
+
+  onAgentJobEvent(callback: (data: AgentJobEvent) => void): void {
+    this.onAgentJobEventCallback = callback;
   }
 
   // Agent emit methods
