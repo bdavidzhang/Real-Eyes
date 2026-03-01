@@ -13,60 +13,57 @@
   <div id="app">
     <div class="plan-container">
       <div class="plan-header">
-        <h1 class="plan-title">Here's Your ASI Tracking Plan</h1>
-        <p class="plan-subtitle">Review and customize before starting</p>
+        <p class="plan-kicker">ASI // Mission Brief</p>
+        <h1 class="plan-title">Your Tracking Plan</h1>
+        <p class="plan-subtitle">Tune your target stack, then launch autonomous tracking.</p>
+      </div>
+
+      <div class="agent-broadcast glass-panel">
+        <p class="agent-label">AGENT VOICE</p>
+        <p id="agentLine" class="agent-line">Reading scene intent. Stand by for mission-grade recommendations.</p>
       </div>
 
       <div id="loadingState" class="loading-state">
         <div class="loading-spinner"></div>
-        <p>Analyzing your tracking needs...</p>
+        <p id="loadingLine">Building tactical object priorities...</p>
       </div>
 
       <div id="planContent" class="plan-content" style="display: none;">
         <!-- Objects Section -->
         <div class="plan-section glass-panel">
-          <h3 class="section-title">Recommended Objects to Track</h3>
-          <p class="section-subtitle">You can add or remove objects</p>
+          <h3 class="section-title">Target Stack</h3>
+          <p class="section-subtitle">Add or remove any objects before launch.</p>
           <div id="objectsList" class="objects-list"></div>
           <div class="add-object-form">
             <input
               type="text"
               id="customObjectInput"
               class="glass-input"
-              placeholder="Add custom object..."
+              placeholder="Add custom target..."
             />
             <button id="addObjectBtn" class="btn-secondary">Add</button>
           </div>
         </div>
 
-        <!-- Waypoints Section -->
         <div class="plan-section glass-panel">
-          <div class="feature-header">
-            <div>
-              <h3 class="section-title">Waypoints</h3>
-            </div>
-            <span class="feature-badge">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            </span>
-          </div>
-          <p id="waypointsJustification" class="feature-justification"></p>
+          <h3 class="section-title">Mission Pulse</h3>
+          <p class="feature-justification">The ASI agent keeps scanning, adapts object confidence in real time, and calls out high-value hits instantly.</p>
         </div>
 
-        <!-- Pathfinding Section -->
-        <div class="plan-section glass-panel">
-          <div class="feature-header">
-            <div>
-              <h3 class="section-title">Pathfinding</h3>
+        <div class="plan-section glass-panel qr-section">
+          <h3 class="section-title">Scan To Open Phone Camera</h3>
+          <p class="section-subtitle">Point your phone at this QR to jump straight into the camera streamer.</p>
+          <div class="qr-layout">
+            <img id="cameraQrImage" class="camera-qr-image" alt="QR code for camera page" />
+            <div class="qr-meta">
+              <a id="cameraPageLink" class="camera-page-link" target="_blank" rel="noopener noreferrer"></a>
+              <p id="cameraQrHint" class="camera-qr-hint"></p>
             </div>
-            <span class="feature-badge">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            </span>
           </div>
-          <p id="pathfindingJustification" class="feature-justification"></p>
         </div>
 
         <button id="confirmBtn" class="btn-primary btn-large">
-          Confirm & Start Tracking →
+          Launch Mission Control →
         </button>
       </div>
 
