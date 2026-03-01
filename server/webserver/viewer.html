@@ -201,7 +201,7 @@
               <button class="agent-feed-filter active" data-category="tool">
                 Tools <span class="agent-feed-filter-count">0</span>
               </button>
-              <button class="agent-feed-filter active" data-category="task">
+              <button class="agent-feed-filter" data-category="task">
                 Tasks <span class="agent-feed-filter-count">0</span>
               </button>
               <button class="agent-feed-filter active" data-category="ui">
@@ -219,8 +219,10 @@
 
         <section class="agent-column">
           <div class="agent-section-header">Mission Board</div>
-          <div id="agent-missions">
-            <div class="agent-missions-empty">No active missions</div>
+          <div class="mission-scroll">
+            <div id="agent-missions">
+              <div class="agent-missions-empty">No active missions</div>
+            </div>
           </div>
 
           <!-- Compact detection input -->
@@ -241,6 +243,7 @@
           <!-- Unified Visual Context gallery — detection cards + agent snapshots -->
           <div class="agent-section-header">Visual Context</div>
           <div id="agent-context-gallery" class="agent-context-gallery">
+            <div id="obsCardList"></div>
             <div id="detectionResultsList"></div>
             <div class="agent-context-empty" id="agent-context-empty">No snapshots yet</div>
           </div>

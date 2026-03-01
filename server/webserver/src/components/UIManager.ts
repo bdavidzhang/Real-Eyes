@@ -523,7 +523,7 @@ export class UIManager {
       const color = this.queryColorMap.get(q) || '#ffffff';
       const chip = document.createElement('span');
       chip.className = 'query-chip';
-      chip.innerHTML = `<span class="query-chip-dot" style="background:${color}"></span>${this.escapeHtml(q)}<button class="query-chip-remove" data-query="${this.escapeHtml(q)}" title="Remove">&times;</button>`;
+      chip.innerHTML = `<span class="query-chip-dot" style="background:${color}"></span><span class="query-chip-label">${this.escapeHtml(q)}</span><button class="query-chip-remove" data-query="${this.escapeHtml(q)}" title="Remove">&times;</button>`;
       this.activeQueriesList.appendChild(chip);
     }
   }

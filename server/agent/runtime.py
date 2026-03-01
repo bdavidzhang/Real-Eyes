@@ -37,13 +37,14 @@ class AgentRuntime:
         streaming_slam,
         emit_event: Callable[[str, dict[str, Any]], None],
         max_workers: int = 4,
+        on_query_added=None,
     ):
         self.session_id = session_id
         self.slam = streaming_slam
         self.emit_event = emit_event
 
         self.registry = ToolRegistry(max_workers=max_workers)
-        self.vggt = VGGTTools(streaming_slam)
+        self.vggt = VGGTTools(streaming_slam, on_query_added=on_query_added)
         self.ui = UITools(emit_ui_command=lambda cmd: self.emit_event("agent_ui_command", cmd))
 
         self._register_tools()

@@ -222,6 +222,17 @@
   padding-top: 10px;
 }
 
+/* Prevent children from shrinking so every section renders at full height */
+.agent-column:last-child > * {
+  flex-shrink: 0;
+}
+
+/* Horizontal scroll wrapper for mission board */
+.mission-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
 .agent-section-header {
   color: rgba(220, 231, 247, 0.78);
   font-size: 10px;
@@ -454,12 +465,10 @@
 }
 
 #agent-missions {
-  max-height: 230px;
-  overflow-y: auto;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
-  padding-right: 4px;
+  min-width: max-content;
 }
 
 .agent-missions-empty {
@@ -472,6 +481,7 @@
 }
 
 .agent-mission-card {
+  flex: 0 0 220px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
@@ -683,7 +693,8 @@
   color: #ff8585;
 }
 
-/* ── #detectionResultsList: spans full gallery width, forms its own 2-col sub-grid ── */
+/* ── OBS card container + detection list: full-width, 2-col sub-grid each ── */
+#obsCardList,
 #detectionResultsList {
   grid-column: 1 / -1;
   display: grid;
@@ -691,7 +702,14 @@
   gap: 6px;
 }
 
+#obsCardList:empty,
 #detectionResultsList:empty {
+  display: none;
+}
+
+/* Hide empty placeholder when any cards are present */
+#obsCardList:not(:empty) ~ .agent-context-empty,
+#detectionResultsList:not(:empty) ~ .agent-context-empty {
   display: none;
 }
 

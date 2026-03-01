@@ -612,7 +612,9 @@ button.icon {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 12px;
-  min-height: 0;
+  min-height: 27px;
+  max-height: 96px;
+  overflow-y: auto;
 }
 
 .query-chip {

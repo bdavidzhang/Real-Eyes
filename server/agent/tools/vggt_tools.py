@@ -28,8 +28,9 @@ def _normalize_queries(raw: list[str], max_count: int = 16) -> list[str]:
 
 
 class VGGTTools:
-    def __init__(self, streaming_slam):
+    def __init__(self, streaming_slam, on_query_added=None):
         self.slam = streaming_slam
+        self.on_query_added = on_query_added
 
     def get_scene_snapshot(self, args) -> dict[str, Any]:
         num_submaps = int(self.slam.solver.map.get_num_submaps())
@@ -58,16 +59,27 @@ class VGGTTools:
             return {"queries": [], "detections": [], "count": 0}
 
         t0 = time.time()
-        last = {"detections": [], "is_final": True}
-        for partial in self.slam.run_detection_progressive(queries):
-            last = partial
 
-        detections = list(last.get("detections", []))[: int(args.max_results)]
+        with self.slam._detection_lock:
+            already_active = set(self.slam.active_queries)
+
+        for query in queries:
+            if query not in already_active:
+                for _ in self.slam.add_query_progressive(query):
+                    pass
+                if self.on_query_added:
+                    self.on_query_added(query)
+
+        query_set = set(queries)
+        with self.slam._detection_lock:
+            detections = [d for d in self.slam.accumulated_detections if d.get("query") in query_set]
+        detections = detections[: int(args.max_results)]
+
         return {
             "queries": queries,
             "count": len(detections),
             "detections": detections,
-            "is_final": bool(last.get("is_final", True)),
+            "is_final": True,
             "latency_ms": int((time.time() - t0) * 1000),
         }
 
@@ -179,7 +191,7 @@ class VGGTTools:
         }
 
     def add_detection_object(self, args) -> dict[str, Any]:
-        """Add a single object to active detection queries. Actual scan is triggered via app.py."""
+        """Add a single object to active detection queries and persist it in the viewer."""
         query = str(args.query).strip().lower()
         if not query:
             return {"success": False, "error": "empty query"}
@@ -187,6 +199,8 @@ class VGGTTools:
             already_active = query in self.slam.active_queries
         if already_active:
             return {"success": True, "query": query, "status": "already_active"}
+        if self.on_query_added:
+            self.on_query_added(query)
         return {"success": True, "query": query, "status": "queued"}
 
     def remove_detection_object(self, args) -> dict[str, Any]:

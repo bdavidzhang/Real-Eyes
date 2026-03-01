@@ -168,6 +168,23 @@ body {
   max-width: 94%;
 }
 
+/* ── Agent Mission Intro ── */
+
+.agent-intro-box {
+  padding: 16px 18px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.agent-intro-line {
+  margin: 0;
+  font-size: clamp(14px, 2vw, 16px);
+  line-height: 1.55;
+  font-weight: 400;
+  color: var(--text-secondary);
+  max-width: 94%;
+}
+
 /* ── Loading State ── */
 
 .loading-state {

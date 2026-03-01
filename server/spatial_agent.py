@@ -55,11 +55,13 @@ class SpatialAgent:
         openrouter_api_key: str,
         session_id: str = "global",
         on_queries_changed: Optional[Callable[[str, list[str]], None]] = None,
+        on_query_persisted: Optional[Callable[[str], None]] = None,
     ):
         self.slam = streaming_slam
         self.emit = emit_fn
         self.session_id = session_id
         self.on_queries_changed = on_queries_changed
+        self.on_query_persisted = on_query_persisted
 
         # LLM config
         orch_model = os.environ.get(
@@ -248,6 +250,7 @@ class SpatialAgent:
                 streaming_slam=self.slam,
                 emit_event=self.emit,
                 max_workers=4,
+                on_query_added=self.on_query_persisted,
             )
 
     # ------------------------------------------------------------------
@@ -1634,6 +1637,18 @@ class SpatialAgent:
 
     def set_initial_context(self, goal: str, initial_queries: list[str]) -> None:
         self.current_goal = (goal or "").strip() or None
+
+        # Build startup thought
+        parts = []
+        if self.current_goal:
+            parts.append(f"My goal is to {self.current_goal}.")
+        if initial_queries:
+            q_str = ", ".join(initial_queries)
+            parts.append(f"I'll actively scan the scene and search for: {q_str}.")
+        if not parts:
+            parts.append("I'm ready to explore the scene and report what I find.")
+        self._emit_thought(" ".join(parts), thought_type="thinking")
+
         if self.current_goal:
             self._emit_action("goal_updated", f"Goal: {self.current_goal}")
 

@@ -35,6 +35,7 @@ export class AgentPanel {
   // Gallery elements
   private contextGallery: HTMLElement;
   private contextEmpty: HTMLElement;
+  private obsCardList: HTMLElement;
 
   // Feed elements
   private activityFeed: HTMLElement;
@@ -72,6 +73,7 @@ export class AgentPanel {
     this.missionsEl = this.getEl('agent-missions');
     this.contextGallery = this.getEl('agent-context-gallery');
     this.contextEmpty = this.getEl('agent-context-empty');
+    this.obsCardList = this.getEl('obsCardList');
     this.activityFeed = this.getEl('agent-activity-feed');
     this.filterBtns = document.querySelectorAll('.agent-feed-filter');
     this.pauseBtn = this.getEl('agent-feed-pause') as HTMLButtonElement;
@@ -93,7 +95,8 @@ export class AgentPanel {
   private initFilters(): void {
     this.filterBtns.forEach((btn) => {
       const cat = (btn as HTMLElement).dataset.category ?? '';
-      this.filterState.set(cat, true);
+      const defaultOn = cat !== 'task';   // tasks off by default
+      this.filterState.set(cat, defaultOn);
       this.filterCounts.set(cat, 0);
     });
   }
@@ -352,13 +355,10 @@ export class AgentPanel {
 
   private addObsCard(imageB64: string, label: string): void {
     // Remove oldest OBS cards if over limit
-    const existing = this.contextGallery.querySelectorAll<HTMLElement>('.agent-context-card--obs');
+    const existing = this.obsCardList.querySelectorAll<HTMLElement>('.agent-context-card--obs');
     if (existing.length >= MAX_OBS_CARDS) {
       existing[existing.length - 1].remove();
     }
-
-    // Hide the empty placeholder once we have an OBS card
-    this.contextEmpty.classList.add('is-hidden');
 
     const card = document.createElement('figure');
     card.className = 'agent-context-card agent-context-card--obs';
@@ -367,13 +367,8 @@ export class AgentPanel {
       <img src="data:image/jpeg;base64,${imageB64}" alt="${this.escapeHtml(label)}" />
       <figcaption>${this.escapeHtml(label)}</figcaption>`;
 
-    // Insert after #detectionResultsList so detection cards stay grouped at top
-    const detList = document.getElementById('detectionResultsList');
-    if (detList && detList.nextSibling) {
-      this.contextGallery.insertBefore(card, detList.nextSibling);
-    } else {
-      this.contextGallery.appendChild(card);
-    }
+    // Prepend so newest OBS cards appear first
+    this.obsCardList.prepend(card);
   }
 
   private buildEntry(

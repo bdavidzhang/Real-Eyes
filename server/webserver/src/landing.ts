@@ -13,78 +13,56 @@ interface DemoVideo {
 
 const DEMO_PROMPT_BY_VIDEO: Record<string, string> = {
   'office_loop.mp4':
-    'DEMO: Survey a university research lab office. Walk down a long carpeted hallway lined with ' +
-    'cubicle partitions with frosted glass panels. Detect and track: whiteboards with writing, ' +
-    'blue recycling bins, black trash cans, metal coat rack stands, a printer/copier on a filing cabinet, ' +
-    'a stainless steel refrigerator with magnets, a kitchen counter with sink and coffee machine, ' +
-    'research poster boards, glass and wooden doors, computer monitors at desks, a wall-mounted card reader, ' +
-    'and a fire alarm pull station. The hallway transitions from white walls to blue walls midway through.',
+    'DEMO: Act as a facilities survey agent inside a university research building. ' +
+    'Walk through the hallway and office areas assessing workspace setup, equipment placement, ' +
+    'and safety infrastructure. Identify and track key items like whiteboards, waste bins, ' +
+    'lab/kitchen appliances, workstations, access control devices, and emergency equipment. ' +
+    'Also note transitions in environment (e.g., wall colors or layout changes) and explore ' +
+    'any additional objects relevant to office operations or safety.',
 
   'house.MOV':
-    'DEMO: Explore a residential house from entryway through living room, dining room, and kitchen. ' +
-    'Start at the front door with a shoe rack holding multiple pairs of sneakers and sandals on a rubber mat, ' +
-    'a wooden bench, and a clear plastic storage bin. In the living room find a fabric couch with pillows, ' +
-    'a wooden coffee table with a laptop, water bottle, baseball cap, and orange juice bottle. ' +
-    'The dining room has a large glass-top wooden table with chairs, a purple water filter pitcher, ' +
-    'a white water dispenser, and a bottle of hot sauce. A potted plant sits on a wooden dresser. ' +
-    'The kitchen has a white farmhouse sink by a window, blue dishes in a dish rack, red rubber gloves, ' +
-    'green recycling bins under the sink, an electric stove with a kettle and frying pan, ' +
-    'a fire extinguisher on the wall, a microwave on a shelf, and a coffee maker.',
+    'DEMO: Act as a residential environment surveyor exploring a home from entryway to kitchen. ' +
+    'Assess how spaces are organized and how objects are distributed across living, dining, ' +
+    'and kitchen areas. Track representative items such as seating, tables, storage areas, ' +
+    'appliances, food-related objects, and safety equipment. Identify clutter, high-use surfaces, ' +
+    'and anything notable about room function or layout. Explore and document other relevant objects you encounter.',
 
   'house2.MOV':
-    'DEMO: Walk through a second angle of a residential house focusing on living room and kitchen. ' +
-    'Start at a wall-mounted black file/mail organizer by a window with blinds. In the living room ' +
-    'find a dark leather couch/recliner with a laptop, a blanket, and a phone. A wooden side table ' +
-    'holds papers next to a decorative plant on a plant stand. Water bottle packs and beer bottles ' +
-    'sit on the floor. Wall text decor reads "House". The dining area has the same glass-top table ' +
-    'with a purple water pitcher, white dispenser, and wooden chairs. The kitchen has white cabinets, ' +
-    'a black air fryer, a Keurig-style coffee maker, a paper towel holder on the wall, ' +
-    'a metal storage shelf with white bins full of snacks and groceries, a wire dish rack, ' +
-    'and pots and pans on the counter.',
+    'DEMO: Perform a secondary interior survey of a residential home focusing on layout, usage patterns, ' +
+    'and object distribution. Track common furniture, electronics, storage units, and kitchen appliances. ' +
+    'Pay attention to how personal items and consumables are arranged. Identify patterns of occupancy ' +
+    'and explore additional objects that help characterize how the space is used.',
 
   'crime_scene.mov':
-    'DEMO: Investigate a staged indoor crime scene in a sunlit apartment. The scene has numbered ' +
-    'yellow evidence markers (1 through 8) placed on the floor and carpet. Track and locate: ' +
-    'muddy footprint trails on hardwood flooring, an overturned whiskey glass with spilled liquid, ' +
-    'broken eyeglasses/sunglasses near marker 3, a plastic evidence bag, small round objects as evidence, ' +
-    'a white carpet/rug with scattered items, a wooden bookshelf full of books, a laptop on a desk ' +
-    'by the window with blinds, a dark wood dining table with upholstered chairs, a floor lamp, ' +
-    'a metal rolling side table with a wooden tray and items underneath, and carpet stains near the evidence.',
+    'DEMO: Act as a forensic survey agent examining a staged indoor crime scene. ' +
+    'Document spatial relationships between evidence markers and surrounding objects. ' +
+    'Track signs of disturbance such as spills, broken items, footprints, displaced furniture, ' +
+    'or unusual object placements. Explore beyond predefined evidence to identify anything ' +
+    'potentially relevant to reconstructing events or understanding the scene context.',
 
   'disaster.mov':
-    'DEMO: Navigate a flood and earthquake disaster zone in a Japanese residential neighborhood street. ' +
-    'The narrow street is covered in thick mud and standing water. Detect and track: a displaced wooden ' +
-    'dining table and chairs sitting in the middle of the flooded street, a pair of yellow rubber boots, ' +
-    'a knocked-over red bicycle, a displaced mattress, a silver car half-buried under collapsed building debris, ' +
-    'power lines and leaning utility poles, cracked and upheaved concrete pavement, scattered wood planks ' +
-    'and cardboard, a white bathtub washed into the street, a metal shopping cart, collapsed residential ' +
-    'building facades, metal roofing sheets, and miscellaneous household debris blocking the road.',
+    'DEMO: Act as a disaster response surveyor assessing damage in a flooded and earthquake-affected ' +
+    'residential street. Evaluate structural damage, displaced household objects, infrastructure failure, ' +
+    'and hazards in the roadway. Track representative debris, vehicles, utilities, and structural elements. ' +
+    'Also explore additional signs of environmental instability or safety risks as you navigate the area.',
 
   'disaster2.mov':
-    'DEMO: Survey an urban earthquake aftermath scene along a wide city boulevard flanked by tall ' +
-    'damaged apartment buildings. The street is covered in gray dust and debris. Detect and track: ' +
-    'a red barber/salon chair standing upright in the middle of the road, a grand piano partially buried ' +
-    'in rubble, toppled metal streetlights and lamp posts, scattered office desk chairs, large puddles ' +
-    'of standing water reflecting the sky, chunks of concrete and rebar, shattered glass panels on the ground, ' +
-    'a red traffic light dangling from a wire in the distance, a TV/computer monitor in the debris, ' +
-    'bent metal structural beams, thick dust haze between the buildings, and collapsed concrete slabs.',
+    'DEMO: Act as an urban damage assessment agent surveying an earthquake aftermath scene. ' +
+    'Assess building integrity, debris distribution, fallen infrastructure, and abandoned objects. ' +
+    'Track major structural failures and unusual displaced items. Identify hazards, blocked pathways, ' +
+    'and environmental conditions such as dust or water. Explore additional features relevant to recovery planning.',
 
   'hackathon_loop.MOV':
-    'DEMO: Walk through a university hackathon venue with a multi-level atrium layout. The ground floor ' +
-    'has a wide corridor with polished floors. Detect and track: a metal staircase with steel handrails, ' +
-    'a metal wire mesh railing/fence overlooking a lower seating area, orange/red metal public benches, ' +
-    'black hexagonal trash cans, large concrete support columns/pillars, people sitting at folding tables ' +
-    'working on laptops, backpacks on the floor, white rolling chairs, overhead fluorescent lights, ' +
-    'brick wall sections along the railing, and red/orange accent columns.',
+    'DEMO: Act as an event environment analysis agent surveying a university hackathon venue. ' +
+    'Assess crowd activity, workspace setup, seating distribution, and structural layout. ' +
+    'Track representative furniture, collaborative work areas, staircases, railings, and trash receptacles. ' +
+    'Explore additional objects that indicate event logistics, attendee behavior, or space utilization.',
 
   'our_workspace.MOV':
-    'DEMO: Pan around a hackathon team workspace where multiple people are actively coding. ' +
-    'Detect and track: multiple open laptops (MacBooks and others) showing code editors and 3D visualizations, ' +
-    'orange ergonomic rolling chairs, light blue/mint rolling chairs, smartphones on tables, ' +
-    'a black water bottle / hydro flask, bananas on the table, a fast food takeout bag, ' +
-    'several backpacks on the floor, heavy winter puffer jackets draped on chairs, ' +
-    'a rolling suitcase/luggage, white AirPods cases, charging cables, ' +
-    'a whiteboard on the wall, a gray trash can with liner, and a jar of snacks/cereal.',
+    'DEMO: Act as a workspace activity observer analyzing a hackathon team area. ' +
+    'Track laptops, seating, personal belongings, food items, and collaborative tools such as whiteboards. ' +
+    'Assess workspace density, object clustering, and signs of active development. ' +
+    'Explore additional objects that help characterize productivity, organization, or team dynamics.',
 };
 
 document.addEventListener('DOMContentLoaded', () => {

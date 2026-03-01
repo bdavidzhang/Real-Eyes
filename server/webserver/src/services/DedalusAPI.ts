@@ -8,6 +8,7 @@ export interface TrackingPlan {
     enabled: true;
     justification: string;
   };
+  agent_intro?: string;
 }
 
 export class DedalusAPI {

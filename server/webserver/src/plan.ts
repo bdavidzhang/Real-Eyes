@@ -11,6 +11,7 @@ let trackingSource: TrackingSource = 'live';
 let selectedDemoVideoId: string | null = null;
 let loadingLineTimer: number | null = null;
 let typewriterTimer: number | null = null;
+let introTypewriterTimer: number | null = null;
 
 const LOADING_LINES = [
   'Calibrating scene intelligence...',
@@ -30,14 +31,14 @@ const AGENT_LINES = [
 const PLAN_FALLBACK_OBJECTS = ['person', 'chair', 'table', 'bottle', 'backpack', 'door'];
 
 const DEMO_OBJECTS_BY_VIDEO: Record<string, string[]> = {
-  'office_loop.mp4': ['whiteboard', 'recycling bin', 'trash can', 'coat rack', 'printer', 'refrigerator', 'coffee machine', 'monitor', 'door'],
-  'house.MOV': ['couch', 'coffee table', 'laptop', 'shoe rack', 'dining table', 'chair', 'water pitcher', 'sink', 'stove', 'kettle', 'fire extinguisher'],
-  'house2.MOV': ['leather couch', 'laptop', 'plant', 'dining table', 'chair', 'water pitcher', 'coffee maker', 'air fryer', 'cabinet', 'storage shelf'],
+  'office_loop.mp4': ['whiteboard', 'recycling bin', 'trash can', 'printer', 'refrigerator', 'coffee machine', 'monitor', 'door'],
+  'house.MOV': ['couch', 'table', 'laptop', 'shoe', 'bottle', 'chair', 'plant', 'sink'],
+  'house2.MOV': ['couch', 'laptop', 'plant', 'table', 'chair', 'bottle',  'cabinet'],
   'crime_scene.mov': ['evidence marker', 'footprint', 'broken glass', 'eyeglasses', 'bookshelf', 'laptop', 'dining table', 'chair', 'lamp', 'carpet stain'],
   'disaster.mov': ['table', 'yellow boots', 'bicycle', 'car', 'mattress', 'utility pole', 'bathtub', 'shopping cart', 'debris pile'],
   'disaster2.mov': ['barber chair', 'piano', 'streetlight', 'office chair', 'traffic light', 'monitor', 'concrete slab', 'puddle'],
-  'hackathon_loop.MOV': ['staircase', 'bench', 'trash can', 'column', 'laptop', 'table', 'backpack', 'chair', 'railing'],
-  'our_workspace.MOV': ['laptop', 'chair', 'phone', 'water bottle', 'banana', 'backpack', 'jacket', 'suitcase', 'whiteboard', 'trash can'],
+  'hackathon_loop.MOV': ['staircase', 'bench', 'trash can', 'laptop', 'table', 'backpack', 'chair'],
+  'our_workspace.MOV': ['laptop', 'chair', 'bottle', 'backpack', 'human', 'table'],
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -130,6 +131,10 @@ function displayPlan(plan: TrackingPlan): void {
   stopLoadingLineRotation();
   document.getElementById('loadingState')!.style.display = 'none';
   document.getElementById('planContent')!.style.display = 'block';
+
+  const introBox = document.getElementById('agentIntroBox');
+  if (introBox) introBox.style.display = 'block';
+  typewriteIntroLine(plan.agent_intro ?? buildDefaultIntro());
 
   renderObjects(plan.objects);
   typewriteAgentLine(buildLaunchLine(plan.objects));
@@ -246,6 +251,39 @@ function typewriteAgentLine(message: string): void {
       }
     }
   }, 28);
+}
+
+function typewriteIntroLine(message: string): void {
+  if (introTypewriterTimer !== null) {
+    clearInterval(introTypewriterTimer);
+    introTypewriterTimer = null;
+  }
+
+  const el = document.getElementById('agentIntroLine');
+  if (!el) return;
+
+  el.classList.remove('typing-cursor');
+  el.textContent = '';
+
+  let charIndex = 0;
+  el.classList.add('typing-cursor');
+
+  introTypewriterTimer = window.setInterval(() => {
+    if (charIndex < message.length) {
+      el.textContent = message.slice(0, charIndex + 1);
+      charIndex++;
+    } else {
+      el.classList.remove('typing-cursor');
+      if (introTypewriterTimer !== null) {
+        clearInterval(introTypewriterTimer);
+        introTypewriterTimer = null;
+      }
+    }
+  }, 28);
+}
+
+function buildDefaultIntro(): string {
+  return 'I will scan the scene and lock onto all high-value targets in the environment.';
 }
 
 /* ── Utilities ── */

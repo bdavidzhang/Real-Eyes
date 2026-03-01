@@ -87,6 +87,20 @@ _gpu_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 # Demo mode (pre-recorded local videos)
 _DEMO_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'}
+
+_ROTATION_MAP = {
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
+
+def _apply_video_rotation(frame, angle):
+    """Rotate a frame to correct for orientation metadata (e.g. iPhone portrait MOV)."""
+    code = _ROTATION_MAP.get(int(angle) % 360)
+    if code is not None:
+        return cv2.rotate(frame, code)
+    return frame
 _demo_lock = threading.Lock()
 _demo_video_feeder = None
 _demo_active_video_id = None
@@ -256,6 +270,46 @@ def _collect_global_query_union() -> list[str]:
     return sorted(query_set)
 
 
+def _agent_persist_query(sid: str, query: str):
+    """Called from agent tools when they scan for a new object.
+
+    Adds the query to manual_queries so it persists as a chip + bounding boxes
+    until the user explicitly removes it via the UI. Also spawns a detection worker
+    if one isn't already running for this query.
+    """
+    query = query.strip().lower()
+    if not query or _event_loop is None or _event_loop.is_closed():
+        return
+    with _sessions_lock:
+        state = _sessions.get(sid)
+        if state is None:
+            return
+        if query in state.manual_queries:
+            return  # Already visible, nothing to do
+        state.manual_queries.add(query)
+
+    _emit_to_sid_threadsafe(sid, "agent_ui_command", {
+        "id": str(uuid.uuid4())[:12],
+        "name": "add_detection_query",
+        "args": {"query": query},
+        "mission_id": None,
+        "ttl_ms": None,
+        "timestamp": time.time(),
+    })
+    asyncio.run_coroutine_threadsafe(
+        _spawn_query_worker_if_needed(query, sid),
+        _event_loop,
+    )
+
+
+async def _spawn_query_worker_if_needed(query: str, sid: str):
+    existing = _query_tasks.get((sid, query))
+    if existing and not existing.done():
+        return
+    task = asyncio.create_task(_run_single_query_detection(query, sid))
+    _query_tasks[(sid, query)] = task
+
+
 def _on_agent_queries_changed(sid: str, queries: list[str]):
     """Called from agent threads; spawns/cancels per-query detection workers."""
     with _sessions_lock:
@@ -297,21 +351,29 @@ async def _apply_agent_query_diff(sid: str, added: set[str], removed: set[str]):
         if task and not task.done():
             task.cancel()
             print(f"  [agent_query_diff] cancelled task for '{q}'")
-        slam_processor.remove_query(q)
-        print(f"  [agent_query_diff] removed '{q}' — slam active_queries now: {slam_processor.active_queries}")
-        # Tell the frontend to remove the chip for this agent query
-        await sio.emit(
-            "agent_ui_command",
-            {
-                "id": str(uuid.uuid4())[:12],
-                "name": "remove_detection_query",
-                "args": {"query": q},
-                "mission_id": None,
-                "ttl_ms": None,
-                "timestamp": time.time(),
-            },
-            to=sid,
-        )
+
+        with _sessions_lock:
+            state = _sessions.get(sid)
+            pinned = state is not None and q in state.manual_queries
+
+        if pinned:
+            # Query was added by an agent tool and is visible in the UI — keep it
+            print(f"  [agent_query_diff] keeping '{q}' — pinned in manual_queries")
+        else:
+            slam_processor.remove_query(q)
+            print(f"  [agent_query_diff] removed '{q}' — slam active_queries now: {slam_processor.active_queries}")
+            await sio.emit(
+                "agent_ui_command",
+                {
+                    "id": str(uuid.uuid4())[:12],
+                    "name": "remove_detection_query",
+                    "args": {"query": q},
+                    "mission_id": None,
+                    "ttl_ms": None,
+                    "timestamp": time.time(),
+                },
+                to=sid,
+            )
 
     if removed:
         active = _session_active_queries(sid)
@@ -359,6 +421,7 @@ def _create_session_agent(sid: str):
         openrouter_api_key=_openrouter_api_key,
         session_id=sid,
         on_queries_changed=_on_agent_queries_changed,
+        on_query_persisted=lambda q: _agent_persist_query(sid, q),
     )
 
 
@@ -520,6 +583,7 @@ class VideoFeeder:
             print(f"Failed to open video: {self.video_path}")
             return
 
+        rotation = cap.get(cv2.CAP_PROP_ORIENTATION_META)
         video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -546,6 +610,9 @@ class VideoFeeder:
             raw_idx += 1
             if (raw_idx - 1) % skip != 0:
                 continue
+
+            if rotation:
+                frame = _apply_video_rotation(frame, rotation)
 
             ok, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:
@@ -671,6 +738,7 @@ def _build_thumbnail_data_url(video_path):
     if not cap.isOpened():
         return None
 
+    rotation = cap.get(cv2.CAP_PROP_ORIENTATION_META)
     thumbnail = None
     for _ in range(10):
         ok, frame = cap.read()
@@ -678,6 +746,8 @@ def _build_thumbnail_data_url(video_path):
             break
         if frame is None or frame.size == 0:
             continue
+        if rotation:
+            frame = _apply_video_rotation(frame, rotation)
         h, w = frame.shape[:2]
         if w > 320:
             scale = 320.0 / float(w)
@@ -1114,7 +1184,8 @@ def generate_plan():
             "Return JSON with exact keys: "
             '{"objects": ["obj1", "obj2", "obj3", "obj4", "obj5"], '
             '"waypoints_justification": "1-2 sentences", '
-            '"pathfinding_justification": "1-2 sentences"}. '
+            '"pathfinding_justification": "1-2 sentences", '
+            '"agent_intro": "1-2 sentence first-person statement (starting with I will...) describing what you will do as the spatial intelligence agent for this mission"}. '
             "Objects must be concrete physical items trackable in 3D space. "
             "Return 5-8 unique objects, prioritized by relevance."
         )
@@ -1122,7 +1193,7 @@ def generate_plan():
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.2,
-            max_tokens=256,
+            max_tokens=400,
         )
         finalized_objects = _finalize_plan_objects(result.get("objects", []), prompt)
 
@@ -1142,6 +1213,10 @@ def generate_plan():
                         "Pathfinding visualizes your traversed route.",
                     ),
                 },
+                "agent_intro": result.get(
+                    "agent_intro",
+                    "I will scan the scene and lock onto all high-value targets in the environment.",
+                ),
             }
         )
     except Exception as e:
@@ -1158,6 +1233,7 @@ def generate_plan():
                     "enabled": True,
                     "justification": "Pathfinding visualizes your traversed route.",
                 },
+                "agent_intro": "I will scan the scene and lock onto all high-value targets in the environment.",
             }
         )
 
