@@ -63,18 +63,18 @@ class SpatialAgent:
 
         # LLM config
         orch_model = os.environ.get(
-            "SPATIAL_ORCH_MODEL", "anthropic/claude-3.5-sonnet-20241022"
+            "SPATIAL_ORCH_MODEL", "google/gemini-3-flash-preview"
         )
         sub_model = os.environ.get(
-            "SPATIAL_SUBAGENT_MODEL", "anthropic/claude-3.5-haiku-20241022"
+            "SPATIAL_SUBAGENT_MODEL", "google/gemini-3-flash-preview"
         )
         orch_fallbacks = self._parse_csv_env(
             "SPATIAL_ORCH_FALLBACKS",
-            "anthropic/claude-3.5-haiku-20241022,openai/gpt-4o-mini",
+            "google/gemini-3-flash-preview,openai/gpt-4o-mini",
         )
         sub_fallbacks = self._parse_csv_env(
             "SPATIAL_SUBAGENT_FALLBACKS",
-            "openai/gpt-4o-mini",
+            "google/gemini-3-flash-preview,openai/gpt-4o-mini",
         )
 
         self.orchestrator_client = OpenRouterClient(
@@ -185,15 +185,28 @@ class SpatialAgent:
                 },
             },
             {
-                "name": "start_deep_scan",
-                "description": "Queue a background CLIP+SAM deep scan job for one or more queries.",
+                "name": "add_detection_object",
+                "description": (
+                    "Add a single object query to the live detection worker pool. "
+                    "Detection results stream to the viewer as submaps are scanned. "
+                    "Call this once per object — do NOT batch multiple objects in one call."
+                ),
                 "args_schema": {
                     "type": "object",
-                    "properties": {
-                        "queries": {"type": "array", "items": {"type": "string"}},
-                        "mission_id": {"type": "integer"},
-                        "top_k": {"type": "integer", "minimum": 1, "maximum": 8},
-                    },
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "remove_detection_object",
+                "description": (
+                    "Remove a single object from the active detection pool and clear its "
+                    "bounding boxes from the viewer."
+                ),
+                "args_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
                 },
             },
             {
@@ -938,11 +951,23 @@ class SpatialAgent:
                         f"Scheduled deep scan for {data.get('query')}",
                         {"job_id": data.get("scheduled_deep_scan_job_id")},
                     )
-            elif tool_name == "start_deep_scan" and data.get("job_id"):
+            elif tool_name == "add_detection_object" and data.get("success"):
+                query = data.get("query", "")
+                # Add to mission tracking and sync queries — this triggers on_queries_changed
+                # which spawns the per-query worker in app.py
+                self._sync_detection_queries_add(query)
                 self._emit_action(
-                    "deep_scan_scheduled",
-                    "Background deep scan queued.",
-                    {"job_id": data.get("job_id"), "queries": data.get("queries", [])},
+                    "detection_object_added",
+                    f"Added detection target: {query}",
+                    {"query": query, "status": data.get("status", "queued")},
+                )
+            elif tool_name == "remove_detection_object" and data.get("success"):
+                query = data.get("query", "")
+                self._sync_detection_queries_remove(query)
+                self._emit_action(
+                    "detection_object_removed",
+                    f"Removed detection target: {query}",
+                    {"query": query},
                 )
         return outcomes
 
@@ -960,8 +985,10 @@ class SpatialAgent:
                 payload = self._tool_request_visual_context_images(tool_args)
             elif tool_name == "search_scene_index":
                 payload = self._tool_search_scene_index(tool_args, mission_id=mission_id)
-            elif tool_name == "start_deep_scan":
-                payload = self._tool_start_deep_scan(tool_args, mission_id=mission_id)
+            elif tool_name == "add_detection_object":
+                payload = self._tool_add_detection_object(tool_args)
+            elif tool_name == "remove_detection_object":
+                payload = self._tool_remove_detection_object(tool_args)
             elif tool_name == "get_job_status":
                 payload = self._tool_get_job_status(tool_args)
             elif tool_name == "cancel_job":
@@ -1123,6 +1150,49 @@ class SpatialAgent:
             if scheduled is not None:
                 payload["scheduled_deep_scan_job_id"] = scheduled["job_id"]
         return payload
+
+    def _tool_add_detection_object(self, args: dict[str, Any]) -> dict[str, Any]:
+        query = str(args.get("query", "") or "").strip().lower()
+        if not query:
+            raise RuntimeError("query is required")
+        with self.slam._detection_lock:
+            already_active = query in self.slam.active_queries
+        if already_active:
+            return {"success": True, "query": query, "status": "already_active"}
+        return {"success": True, "query": query, "status": "queued"}
+
+    def _tool_remove_detection_object(self, args: dict[str, Any]) -> dict[str, Any]:
+        query = str(args.get("query", "") or "").strip().lower()
+        if not query:
+            raise RuntimeError("query is required")
+        self.slam.remove_query(query)
+        return {"success": True, "query": query, "removed": True}
+
+    def _sync_detection_queries_add(self, query: str):
+        """Add a query to all_active_queries and notify app.py via on_queries_changed."""
+        if not query:
+            return
+        with self._lock:
+            if query not in self.all_active_queries:
+                self.all_active_queries.append(query)
+        if self.on_queries_changed is not None:
+            try:
+                self.on_queries_changed(self.session_id, list(self.all_active_queries))
+            except Exception as e:
+                print(f"SpatialAgent[{self.session_id}] query add callback error: {e}")
+
+    def _sync_detection_queries_remove(self, query: str):
+        """Remove a query from all_active_queries and notify app.py via on_queries_changed."""
+        if not query:
+            return
+        with self._lock:
+            if query in self.all_active_queries:
+                self.all_active_queries.remove(query)
+        if self.on_queries_changed is not None:
+            try:
+                self.on_queries_changed(self.session_id, list(self.all_active_queries))
+            except Exception as e:
+                print(f"SpatialAgent[{self.session_id}] query remove callback error: {e}")
 
     def _tool_start_deep_scan(self, args: dict[str, Any], mission_id: Optional[int]) -> dict[str, Any]:
         raw_queries = args.get("queries", [])

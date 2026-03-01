@@ -2,7 +2,7 @@ import { SLAMConnection } from './services/SLAMConnection';
 import { SceneManager } from './services/SceneManager';
 import { UIManager } from './components/UIManager';
 import { AgentPanel } from './components/AgentPanel';
-import type { SLAMUpdate, AgentUICommand, AgentUIResult } from './types';
+import type { SLAMUpdate, AgentUICommand, AgentUIResult, DetectionResult } from './types';
 import './styles/dashboard.css';
 import './styles/agent.css';
 
@@ -18,6 +18,7 @@ class SLAMViewerApp {
   private totalCameras = 0;
   private trackingSource: 'live' | 'demo' = 'live';
   private demoVideoId: string | null = null;
+  private latestDetections: DetectionResult[] = [];
 
   constructor() {
     console.log('🎨 VGGT-SLAM Viewer initializing...');
@@ -90,13 +91,19 @@ class SLAMViewerApp {
       this.uiManager.receivePreviewData(data);
     });
 
-    // Progressive detection results — update scene and UI on each partial
+    // Progressive detection results — show everything the server finds.
+    // Chips control what's actively being searched; removal is the only reason to hide boxes.
     this.connection.onDetectionPartial((data) => {
+      console.debug(
+        '[detection_partial]',
+        'server_active:', data.active_queries,
+        '| dets:', data.detections.length,
+        '| is_final:', data.is_final,
+      );
+      this.latestDetections = data.detections;
       this.sceneManager.updateDetections(data.detections);
       this.uiManager.updateDetectionResults(data.detections);
-      if (data.active_queries) {
-        this.uiManager.updateDetectionQueries(data.active_queries);
-      }
+      // chips stay as-is — do NOT call updateDetectionQueries
     });
   }
 
@@ -215,13 +222,35 @@ class SLAMViewerApp {
     });
     // Detection panel: set targets
     this.uiManager.onSetTargets((queries: string[]) => {
+      const oldQueries = this.uiManager.queries;
+      const removed = oldQueries.filter((q) => !queries.includes(q));
+      const added = queries.filter((q) => !oldQueries.includes(q));
+      console.debug(
+        '[onSetTargets] old:', oldQueries,
+        '| new:', queries,
+        '| added:', added,
+        '| removed:', removed,
+      );
       this.connection.setDetectionQueries(queries);
       this.uiManager.updateDetectionQueries(queries);
-      this.uiManager.showNotification(`Detecting: ${queries.join(', ')}`, 'info');
+      if (removed.length > 0) {
+        // User explicitly removed these chips — hide their boxes immediately
+        const removedSet = new Set(removed);
+        const filtered = this.latestDetections.filter((d) => !removedSet.has(d.query));
+        console.debug('[onSetTargets] hiding removed:', removed, '|', this.latestDetections.length, '->', filtered.length);
+        this.latestDetections = filtered;
+        this.sceneManager.updateDetections(filtered);
+        this.uiManager.updateDetectionResults(filtered);
+      }
+      if (queries.length > 0) {
+        this.uiManager.showNotification(`Detecting: ${queries.join(', ')}`, 'info');
+      }
     });
 
     // Detection panel: clear targets
     this.uiManager.onClearTargets(() => {
+      console.debug('[onClearTargets] clearing all queries. was:', this.uiManager.queries);
+      this.latestDetections = [];
       this.connection.setDetectionQueries([]);
       this.sceneManager.clearDetections();
       this.uiManager.updateDetectionQueries([]);
@@ -337,6 +366,34 @@ class SLAMViewerApp {
           ack('ok', { query_count: queries.length });
           return;
         }
+        case 'add_detection_query': {
+          const query = String(cmd.args.query ?? '').trim().toLowerCase();
+          if (!query) {
+            ack('ignored', undefined, 'query is required');
+            return;
+          }
+          const updated = [...new Set([...this.uiManager.queries, query])];
+          console.debug('[agent add_detection_query] query:', query, '| new chips:', updated);
+          this.uiManager.updateDetectionQueries(updated);
+          ack('ok', { query });
+          return;
+        }
+        case 'remove_detection_query': {
+          const query = String(cmd.args.query ?? '').trim().toLowerCase();
+          if (!query) {
+            ack('ignored', undefined, 'query is required');
+            return;
+          }
+          const updated = this.uiManager.queries.filter((q) => q !== query);
+          console.debug('[agent remove_detection_query] query:', query, '| remaining chips:', updated);
+          this.uiManager.updateDetectionQueries(updated);
+          const filtered = this.latestDetections.filter((d) => d.query !== query);
+          this.latestDetections = filtered;
+          this.sceneManager.updateDetections(filtered);
+          this.uiManager.updateDetectionResults(filtered);
+          ack('ok', { query });
+          return;
+        }
         case 'focus_detection': {
           const center = cmd.args.center;
           if (Array.isArray(center) && center.length === 3) {
@@ -442,13 +499,11 @@ class SLAMViewerApp {
       fps: 0, // FPS is calculated in UIManager
     });
 
-    // Update detection overlays if detections are present
     if (data.detections) {
+      console.debug('[slam_update] dets:', data.detections.length, '| server_active:', data.active_queries);
+      this.latestDetections = data.detections;
       this.sceneManager.updateDetections(data.detections);
       this.uiManager.updateDetectionResults(data.detections);
-    }
-    if (data.active_queries) {
-      this.uiManager.updateDetectionQueries(data.active_queries);
     }
   }
 
