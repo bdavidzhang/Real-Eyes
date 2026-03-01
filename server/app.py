@@ -380,6 +380,10 @@ class VideoFeeder:
             self._thread.join(timeout=2.0)
 
     def _feed_loop(self):
+        if _is_lfs_pointer(self.video_path):
+            print(f"Failed to open video: {self.video_path}"
+                  " (file is a Git LFS pointer, not actual video content)")
+            return
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             print(f"Failed to open video: {self.video_path}")
@@ -475,6 +479,17 @@ def _stop_demo_feeder():
             _demo_target_fps = None
 
 
+def _is_lfs_pointer(path):
+    """Return True if the file is a Git LFS pointer (not actual video content)."""
+    try:
+        if os.path.getsize(path) > 1024:
+            return False
+        with open(path, "r") as f:
+            return "git-lfs" in f.read(50)
+    except Exception:
+        return False
+
+
 def _is_supported_video_file(path):
     ext = os.path.splitext(path)[1].lower()
     return ext in _DEMO_VIDEO_EXTENSIONS
@@ -505,8 +520,12 @@ def _collect_demo_video_files():
     for root, _, files in os.walk(demo_dir):
         for file_name in files:
             full_path = os.path.join(root, file_name)
-            if _is_supported_video_file(full_path):
-                candidates.append(full_path)
+            if not _is_supported_video_file(full_path):
+                continue
+            if _is_lfs_pointer(full_path):
+                print(f"Skipping Git LFS pointer: {full_path}")
+                continue
+            candidates.append(full_path)
     candidates.sort()
     return candidates
 

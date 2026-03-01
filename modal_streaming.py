@@ -118,10 +118,13 @@ image = (
 )
 
 # ---------------------------------------------------------------------------
-# Persistent volume for model weights
+# Persistent volumes
 # ---------------------------------------------------------------------------
 model_cache = modal.Volume.from_name("vggt-slam-models", create_if_missing=True)
 CACHE_PATH = "/root/.cache/torch/hub"
+
+demo_video_vol = modal.Volume.from_name("vggt-slam-demo-videos", create_if_missing=True)
+DEMO_VIDEO_PATH = "/root/demo_videos"
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +180,7 @@ def download_models():
 @app.function(
     image=image,
     gpu="A100-80GB",
-    volumes={CACHE_PATH: model_cache},
+    volumes={CACHE_PATH: model_cache, DEMO_VIDEO_PATH: demo_video_vol},
     secrets=[
         modal.Secret.from_name("huggingface-secret"),
         modal.Secret.from_name("gemini-secret"),
@@ -199,6 +202,8 @@ def web():
         pass
     sys.path.insert(0, "/root/project")
 
+    os.environ.setdefault("DEMO_VIDEO_DIR", DEMO_VIDEO_PATH)
+
     from server.app import asgi_application, initialize
 
     submap_size = int(os.environ.get("SUBMAP_SIZE", "8"))
@@ -219,9 +224,73 @@ def web():
 
 
 # ---------------------------------------------------------------------------
-# Local entrypoint
+# Upload demo videos to Modal volume
 # ---------------------------------------------------------------------------
+_DEMO_VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm'}
+
+
+@app.function(
+    image=modal.Image.debian_slim(),
+    volumes={DEMO_VIDEO_PATH: demo_video_vol},
+    timeout=1200,
+)
+def _save_demo_video(filename: str, data: bytes):
+    dest = os.path.join(DEMO_VIDEO_PATH, filename)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(data)
+    demo_video_vol.commit()
+    print(f"  Saved {filename} ({len(data) / 1024 / 1024:.1f} MB)")
+
+
 @app.local_entrypoint()
-def main():
-    print("Run `modal deploy modal_streaming.py` to start the server.")
-    print("The stable URL will be printed after deploy completes.")
+def upload_demo_videos():
+    """Upload local demo videos to Modal volume (all in parallel).
+
+    Videos are Git LFS tracked, so run `git lfs pull` first to materialise
+    actual video content (otherwise only the tiny pointer files exist locally).
+
+    Usage:
+        git lfs pull
+        modal run modal_streaming.py
+    """
+    demo_dir = os.path.join(os.path.dirname(__file__), "server", "demo_videos")
+    if not os.path.isdir(demo_dir):
+        print(f"Demo video directory not found: {demo_dir}")
+        return
+
+    videos = sorted(
+        f
+        for f in os.listdir(demo_dir)
+        if os.path.splitext(f)[1].lower() in _DEMO_VIDEO_EXTENSIONS
+    )
+    if not videos:
+        print("No video files found in server/demo_videos/")
+        return
+
+    to_upload = []
+    skipped = 0
+    for filename in videos:
+        path = os.path.join(demo_dir, filename)
+        size = os.path.getsize(path)
+        if size < 1024:
+            with open(path, "r") as f:
+                head = f.read(50)
+            if "git-lfs" in head:
+                print(f"  SKIP {filename} (Git LFS pointer — run `git lfs pull` first)")
+                skipped += 1
+                continue
+
+        print(f"  Queuing {filename} ({size / 1024 / 1024:.1f} MB) ...")
+        with open(path, "rb") as f:
+            data = f.read()
+        to_upload.append((filename, data))
+
+    if to_upload:
+        print(f"\nUploading {len(to_upload)} videos in parallel...")
+        for result in _save_demo_video.starmap(to_upload):
+            pass
+
+    print(f"\nDone: {len(to_upload)} uploaded, {skipped} skipped (LFS pointers).")
+    if skipped:
+        print("Run `git lfs pull` to download actual video files, then re-run this.")
