@@ -155,7 +155,6 @@ class OpenRouterClient:
             max_tokens=max_tokens,
             extra_headers={
                 "HTTP-Referer": self.referer,
-                "X-Title": self.app_name,
             },
         )
         msg = response.choices[0].message

@@ -7,10 +7,12 @@ import type {
   AgentToolEvent,
   AgentUICommand,
   AgentUIResult,
+  AgentTaskEvent,
+  AgentTaskState,
   MissionState,
 } from '../types';
 
-type FeedCategory = 'thought' | 'action' | 'finding' | 'tool' | 'ui';
+type FeedCategory = 'thought' | 'action' | 'finding' | 'tool' | 'task' | 'ui';
 
 interface FeedEntryOptions {
   id: string;
@@ -53,6 +55,7 @@ export class AgentPanel {
   private submapsEl: HTMLElement;
   private queryCountEl: HTMLElement;
   private healthPill: HTMLElement;
+  private activeTasksEl: HTMLElement;
 
   private feedPauseBtn: HTMLButtonElement;
   private feedClearBtn: HTMLButtonElement;
@@ -84,6 +87,7 @@ export class AgentPanel {
     'action',
     'finding',
     'tool',
+    'task',
     'ui',
   ]);
 
@@ -92,6 +96,7 @@ export class AgentPanel {
     action: 0,
     finding: 0,
     tool: 0,
+    task: 0,
     ui: 0,
   };
 
@@ -109,6 +114,7 @@ export class AgentPanel {
     this.submapsEl = document.getElementById('agent-submaps')!;
     this.queryCountEl = document.getElementById('agent-query-count')!;
     this.healthPill = document.getElementById('agent-health-pill')!;
+    this.activeTasksEl = document.getElementById('agent-active-tasks')!;
 
     this.feedPauseBtn = document.getElementById('agent-feed-pause') as HTMLButtonElement;
     this.feedClearBtn = document.getElementById('agent-feed-clear') as HTMLButtonElement;
@@ -185,6 +191,7 @@ export class AgentPanel {
         action: 0,
         finding: 0,
         tool: 0,
+        task: 0,
         ui: 0,
       };
       this.activityFeed.innerHTML = '';
@@ -331,6 +338,21 @@ export class AgentPanel {
     });
   }
 
+  handleTaskEvent(data: AgentTaskEvent): void {
+    const latency = typeof data.latency_ms === 'number' ? `${data.latency_ms}ms` : '';
+    const metaBits = [data.task_type, data.status.toUpperCase(), latency].filter(Boolean);
+    const content = data.error || data.details || data.name;
+    this.enqueueEntry({
+      id: `task-${data.id}-${data.status}`,
+      className: `agent-entry-task agent-entry-task-${data.status}`,
+      label: `Task · ${data.name}`,
+      content,
+      category: 'task',
+      meta: metaBits.join(' · '),
+      details: data,
+    });
+  }
+
   handleState(data: AgentState): void {
     this.agentEnabled = data.enabled;
     this.renderToggleState();
@@ -346,6 +368,7 @@ export class AgentPanel {
     this.queryCountEl.textContent = String(data.active_queries?.length ?? 0);
 
     this.renderHealthPill(data);
+    this.renderActiveTasks(data.active_tasks || []);
     this.renderMissions(data.missions);
   }
 
@@ -527,6 +550,12 @@ export class AgentPanel {
       const found = mission.found.length;
       const total = mission.queries.length;
       const pct = total > 0 ? Math.round((found / total) * 100) : 0;
+      const stallReason = mission.status === 'stalled' && mission.stall_reason
+        ? `<div class="agent-mission-stall-reason">${this.escapeHtml(mission.stall_reason)}</div>`
+        : '';
+      const progressAgeText = typeof mission.last_progress_ts === 'number'
+        ? `${Math.max(0, Math.floor((Date.now() / 1000) - mission.last_progress_ts))}s ago`
+        : 'unknown';
 
       card.innerHTML = `
         <div class="agent-mission-header">
@@ -534,6 +563,8 @@ export class AgentPanel {
           <span class="agent-mission-status">${this.escapeHtml(mission.status)}</span>
         </div>
         <div class="agent-mission-goal">${this.escapeHtml(mission.goal)}</div>
+        <div class="agent-mission-last-progress">Last progress: ${this.escapeHtml(progressAgeText)}</div>
+        ${stallReason}
         <div class="agent-mission-progress-row">
           <span>${found}/${total} resolved</span>
           <span>${pct}%</span>
@@ -659,6 +690,21 @@ export class AgentPanel {
 
     this.healthPill.textContent = 'SYSTEM READY';
     this.healthPill.classList.add('health-ok');
+  }
+
+  private renderActiveTasks(tasks: AgentTaskState[]): void {
+    if (!tasks.length) {
+      this.activeTasksEl.innerHTML = '<span class="agent-task-pill idle">No active tasks</span>';
+      return;
+    }
+
+    this.activeTasksEl.innerHTML = '';
+    for (const task of tasks.slice(0, 6)) {
+      const el = document.createElement('span');
+      el.className = `agent-task-pill status-${task.status}`;
+      el.textContent = `${task.name} · ${task.status}`;
+      this.activeTasksEl.appendChild(el);
+    }
   }
 
   private humanizeAction(action: string): string {

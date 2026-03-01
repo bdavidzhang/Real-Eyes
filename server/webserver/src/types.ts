@@ -166,6 +166,24 @@ export interface MissionState {
   status: 'active' | 'completed' | 'stalled';
   confidence: number;
   findings_count: number;
+  last_progress_ts?: number;
+  stall_reason?: string | null;
+  stall_count?: number;
+}
+
+export interface AgentTaskState {
+  id: string;
+  timestamp: number;
+  task_type: 'orchestrator' | 'subagent' | 'mission' | 'tool_batch';
+  name: string;
+  status: 'started' | 'heartbeat' | 'succeeded' | 'failed' | 'timed_out' | 'stalled' | 'resumed';
+  mission_id?: number;
+}
+
+export interface AgentTaskEvent extends AgentTaskState {
+  latency_ms?: number;
+  details?: string;
+  error?: string;
 }
 
 export interface AgentState {
@@ -181,6 +199,8 @@ export interface AgentState {
   health?: 'ok' | 'degraded' | 'disabled';
   degraded_mode?: boolean;
   runtime_v2_enabled?: boolean;
+  active_tasks?: AgentTaskState[];
+  orchestrator_busy?: boolean;
 }
 
 export interface AgentAttachment {

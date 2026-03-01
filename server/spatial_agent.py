@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -37,6 +38,9 @@ class Mission:
     confidence: float = 0.0
     created_at: float = field(default_factory=time.time)
     submaps_since_finding: int = 0
+    last_progress_ts: float = field(default_factory=time.time)
+    stall_reason: Optional[str] = None
+    stall_count: int = 0
 
 
 class SpatialAgent:
@@ -76,7 +80,6 @@ class SpatialAgent:
             primary_model=orch_model,
             fallback_models=orch_fallbacks,
             timeout=float(os.environ.get("SPATIAL_LLM_TIMEOUT_S", "20")),
-            app_name="Real-Eyes Spatial Agent",
             max_retries=int(os.environ.get("SPATIAL_LLM_RETRIES", "2")),
         )
         self.subagent_client = OpenRouterClient(
@@ -84,7 +87,6 @@ class SpatialAgent:
             primary_model=sub_model,
             fallback_models=sub_fallbacks,
             timeout=float(os.environ.get("SPATIAL_LLM_TIMEOUT_S", "20")),
-            app_name="Real-Eyes Spatial Subagents",
             max_retries=int(os.environ.get("SPATIAL_LLM_RETRIES", "2")),
         )
 
@@ -95,8 +97,11 @@ class SpatialAgent:
         self.query_update_cooldown_s = float(os.environ.get("SPATIAL_QUERY_COOLDOWN_S", "2.0"))
         self.cycle_min_interval_s = float(os.environ.get("SPATIAL_CYCLE_MIN_INTERVAL_S", "1.2"))
         self.auto_complete_submap_gap = int(os.environ.get("SPATIAL_AUTOCOMPLETE_GAP", "6"))
+        self.stall_submap_gap = int(os.environ.get("SPATIAL_STALL_SUBMAP_GAP", "3"))
         self.max_tool_calls_per_cycle = int(os.environ.get("SPATIAL_MAX_TOOL_CALLS_PER_CYCLE", "4"))
         self.tool_timeout_s = float(os.environ.get("SPATIAL_TOOL_TIMEOUT_S", "10.0"))
+        self.task_heartbeat_s = float(os.environ.get("SPATIAL_TASK_HEARTBEAT_S", "2.0"))
+        self.chat_timeout_s = float(os.environ.get("SPATIAL_CHAT_TIMEOUT_S", "25.0"))
         self.runtime_v2_enabled = os.environ.get("AGENT_RUNTIME_V2_ENABLED", "1").strip().lower() not in {"0", "false", "off"}
         if AgentRuntime is None:
             self.runtime_v2_enabled = False
@@ -131,9 +136,11 @@ class SpatialAgent:
         self._last_cycle_ts = 0.0
         self._submap_count = 0
         self._coverage_estimate = 0.0
+        self._active_tasks: dict[str, dict[str, Any]] = {}
 
         # Thread safety
         self._lock = threading.Lock()
+        self._task_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=3)
         self._runtime = None
         if self.runtime_v2_enabled and AgentRuntime is not None:
@@ -176,30 +183,53 @@ class SpatialAgent:
             if new_detections:
                 self._route_detections(new_detections)
 
-            # Subagents in parallel
+            # Subagents in parallel with tracked lifecycle events.
+            scene_task = self._start_task("subagent", "scene_analyzer")
+            spotter_task = self._start_task("subagent", "object_spotter")
             scene_future = self._executor.submit(self._run_scene_analyzer, keyframes_b64)
             spotter_future = self._executor.submit(self._run_object_spotter, keyframes_b64)
 
-            scene_result = self._safe_future_result(scene_future, "scene_analyzer")
-            spotter_result = self._safe_future_result(spotter_future, "object_spotter")
+            scene_result = self._safe_future_result(
+                scene_future,
+                "scene_analyzer",
+                task_id=scene_task["id"],
+                started_at=scene_task["started_at"],
+            )
+            spotter_result = self._safe_future_result(
+                spotter_future,
+                "object_spotter",
+                task_id=spotter_task["id"],
+                started_at=spotter_task["started_at"],
+            )
 
             layout_result = None
             if self._submap_count % 4 == 0:
-                layout_result = self._run_layout_mapper(keyframes_b64)
+                layout_result = self._run_tracked_task(
+                    task_type="subagent",
+                    name="layout_mapper",
+                    fn=lambda: self._run_layout_mapper(keyframes_b64),
+                    timeout_s=14.0,
+                )
                 if layout_result and layout_result.get("layout_description"):
                     self.spatial_layout = layout_result["layout_description"]
 
             self._bootstrap_missions_from_spotter(spotter_result)
 
-            orchestrator_result = self._run_orchestrator(
-                keyframes_b64=keyframes_b64,
-                scene_result=scene_result,
-                spotter_result=spotter_result,
-                layout_result=layout_result,
-                new_detections=new_detections,
+            orchestrator_result = self._run_tracked_task(
+                task_type="orchestrator",
+                name="cycle_orchestrator",
+                fn=lambda: self._run_orchestrator(
+                    keyframes_b64=keyframes_b64,
+                    scene_result=scene_result,
+                    spotter_result=spotter_result,
+                    layout_result=layout_result,
+                    new_detections=new_detections,
+                ),
+                timeout_s=max(8.0, self.chat_timeout_s),
             )
             if orchestrator_result:
                 self._apply_orchestrator_result(orchestrator_result)
+            self._update_mission_stall_states()
 
             # Coverage estimate: mostly based on explored submaps and mission completion.
             completed = sum(1 for m in self.missions.values() if m.status == "completed")
@@ -223,6 +253,79 @@ class SpatialAgent:
     # ------------------------------------------------------------------
     # Orchestrator + subagents
     # ------------------------------------------------------------------
+
+    def _start_task(self, task_type: str, name: str, mission_id: Optional[int] = None) -> dict[str, Any]:
+        task_id = str(uuid.uuid4())[:12]
+        started_at = time.time()
+        task = {
+            "id": task_id,
+            "timestamp": started_at,
+            "task_type": task_type,
+            "name": name,
+            "status": "started",
+            "mission_id": mission_id,
+        }
+        with self._task_lock:
+            self._active_tasks[task_id] = task
+        self._emit_task_event(task)
+        return {"id": task_id, "started_at": started_at}
+
+    def _update_active_task(self, task_id: str, status: str):
+        with self._task_lock:
+            task = self._active_tasks.get(task_id)
+            if task is not None:
+                task["status"] = status
+
+    def _finish_task(
+        self,
+        task_id: str,
+        task_type: str,
+        name: str,
+        status: str,
+        started_at: float,
+        mission_id: Optional[int] = None,
+        details: Optional[str] = None,
+        error: Optional[str] = None,
+    ):
+        with self._task_lock:
+            self._active_tasks.pop(task_id, None)
+        payload: dict[str, Any] = {
+            "id": task_id,
+            "timestamp": time.time(),
+            "task_type": task_type,
+            "name": name,
+            "status": status,
+            "latency_ms": int((time.time() - started_at) * 1000),
+        }
+        if mission_id is not None:
+            payload["mission_id"] = mission_id
+        if details:
+            payload["details"] = details
+        if error:
+            payload["error"] = error
+        self._emit_task_event(payload)
+
+    def _run_tracked_task(
+        self,
+        task_type: str,
+        name: str,
+        fn: Callable[[], Any],
+        timeout_s: float = 12.0,
+        mission_id: Optional[int] = None,
+    ):
+        task = self._start_task(task_type, name, mission_id=mission_id)
+        task_id = task["id"]
+        started_at = float(task["started_at"])
+        future = self._executor.submit(fn)
+        return self._safe_future_result(
+            future,
+            name,
+            timeout=timeout_s,
+            task_id=task_id,
+            started_at=started_at,
+            task_type=task_type,
+            mission_id=mission_id,
+        )
 
     def _run_scene_analyzer(self, keyframes_b64: list[str]) -> Optional[dict[str, Any]]:
         system_prompt = (
@@ -481,9 +584,40 @@ class SpatialAgent:
         )
         self.scene_history = self.scene_history[-20:]
 
+    def _run_single_tool(self, tool_name: str, tool_args: dict[str, Any], mission_id: Optional[int] = None) -> dict[str, Any]:
+        if not self.runtime_v2_enabled or self._runtime is None:
+            return {"ok": False, "tool": tool_name, "error": "runtime_disabled"}
+        task = self._start_task("tool_batch", tool_name, mission_id=mission_id)
+        result = self._runtime.execute_tool(
+            tool_name,
+            tool_args,
+            timeout_s=self.tool_timeout_s,
+        )
+        if result.get("ok", False):
+            self._finish_task(
+                task_id=task["id"],
+                task_type="tool_batch",
+                name=tool_name,
+                status="succeeded",
+                started_at=float(task["started_at"]),
+                mission_id=mission_id,
+            )
+        else:
+            self._finish_task(
+                task_id=task["id"],
+                task_type="tool_batch",
+                name=tool_name,
+                status="failed",
+                started_at=float(task["started_at"]),
+                mission_id=mission_id,
+                error=str(result.get("error", "tool_failed")),
+            )
+        return result
+
     def _execute_tool_calls(self, tool_calls: list[Any]):
         if not self.runtime_v2_enabled or self._runtime is None:
-            return
+            return []
+        outcomes: list[dict[str, Any]] = []
         executed = 0
         for call in tool_calls:
             if executed >= self.max_tool_calls_per_cycle:
@@ -504,12 +638,9 @@ class SpatialAgent:
                 if not tool_name or not isinstance(tool_args, dict):
                     continue
 
-            result = self._runtime.execute_tool(
-                tool_name,
-                tool_args,
-                timeout_s=self.tool_timeout_s,
-            )
+            result = self._run_single_tool(tool_name, tool_args)
             executed += 1
+            outcomes.append(result)
 
             if not result.get("ok", False):
                 self._emit_thought(
@@ -524,11 +655,16 @@ class SpatialAgent:
                 detections = data.get("detections", [])
                 if isinstance(detections, list) and detections:
                     self._route_detections(detections)
+                    for mission in self.missions.values():
+                        if mission.status == "completed":
+                            continue
+                        if any(str(d.get("query", "")).strip().lower() in mission.queries for d in detections):
+                            self._mark_mission_progress(mission, reason="tool:search_objects")
             elif tool_name == "locate_object_3d" and data.get("found"):
                 center = data.get("center")
                 query = data.get("query")
                 if isinstance(center, list) and len(center) == 3:
-                    self._runtime.execute_tool(
+                    self._run_single_tool(
                         "focus_detection_ui",
                         {
                             "query": query,
@@ -536,12 +672,84 @@ class SpatialAgent:
                             "frame_idx": data.get("matched_frame"),
                             "center": center,
                         },
-                        timeout_s=self.tool_timeout_s,
                     )
+                for mission in self.missions.values():
+                    if mission.status == "completed":
+                        continue
+                    if query and query in mission.queries:
+                        self._mark_mission_progress(mission, reason="tool:locate_object_3d")
+        return outcomes
 
     # ------------------------------------------------------------------
     # User interaction
     # ------------------------------------------------------------------
+
+    def _parse_query_candidates(self, text: str) -> list[str]:
+        cleaned = re.sub(r"\b(and|then|also)\b", ",", text.lower())
+        parts = [part.strip(" .,!?:;") for part in cleaned.split(",")]
+        out: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            tokens = [tok for tok in part.split() if tok not in {"a", "an", "the", "for", "to"}]
+            query = " ".join(tokens).strip()
+            if query and query not in out:
+                out.append(query[:120])
+        return out[:6]
+
+    def _try_tool_first_chat(self, message: str) -> Optional[str]:
+        lower = message.strip().lower()
+        if not lower:
+            return None
+
+        if any(phrase in lower for phrase in ("what are you doing", "status", "missions", "progress")):
+            active = sum(1 for m in self.missions.values() if m.status == "active")
+            stalled = sum(1 for m in self.missions.values() if m.status == "stalled")
+            completed = sum(1 for m in self.missions.values() if m.status == "completed")
+            return (
+                f"I am tracking {active} active missions, {stalled} stalled, and {completed} completed. "
+                f"Current targets: {', '.join(self.all_active_queries) if self.all_active_queries else 'none'}."
+            )
+
+        if any(phrase in lower for phrase in ("scan for", "look for", "track", "find")):
+            source = lower
+            for prefix in ("scan for", "look for", "track", "find"):
+                if prefix in source:
+                    source = source.split(prefix, 1)[1]
+                    break
+            queries = self._parse_query_candidates(source)
+            if queries:
+                self._create_mission(
+                    category="User Request",
+                    goal=f"Find: {', '.join(queries)}",
+                    queries=queries,
+                )
+                if self._runtime is not None:
+                    self._run_single_tool("set_detection_queries_ui", {"queries": queries})
+                self._sync_detection_queries()
+                return f"Started searching for {', '.join(queries)}."
+
+        if any(phrase in lower for phrase in ("where is", "locate", "focus on", "show")):
+            query_source = lower
+            for prefix in ("where is", "locate", "focus on", "show"):
+                if prefix in query_source:
+                    query_source = query_source.split(prefix, 1)[1]
+                    break
+            queries = self._parse_query_candidates(query_source)
+            if queries and self._runtime is not None:
+                query = queries[0]
+                locate = self._run_single_tool("locate_object_3d", {"query": query})
+                if locate.get("ok") and locate.get("data", {}).get("found"):
+                    return f"I located {query} and focused it in the UI."
+                search = self._run_single_tool("search_objects", {"queries": [query], "max_results": 10})
+                data = search.get("data", {})
+                detections = data.get("detections", []) if isinstance(data, dict) else []
+                if isinstance(detections, list) and detections:
+                    self._route_detections(detections)
+                    return f"I ran a targeted search and found {query}."
+                return f"I could not confirm {query} yet; I will keep scanning."
+
+        return None
 
     def handle_user_message(self, message: str) -> str:
         message = (message or "").strip()
@@ -551,6 +759,7 @@ class SpatialAgent:
         self.chat_history.append({"role": "user", "content": message})
         self.chat_history = self.chat_history[-20:]
 
+        chat_task = self._start_task("orchestrator", "chat_request")
         missions_summary = [
             {
                 "id": m.id,
@@ -588,6 +797,27 @@ class SpatialAgent:
         )
 
         try:
+            fast_reply = self._try_tool_first_chat(message)
+            if fast_reply is not None:
+                self.chat_history.append({"role": "assistant", "content": fast_reply})
+                self.chat_history = self.chat_history[-20:]
+                self._emit_thought(
+                    fast_reply,
+                    thought_type="chat_response",
+                    subagent="orchestrator",
+                    keyframe_b64=self._latest_keyframe_b64(),
+                )
+                self._finish_task(
+                    task_id=chat_task["id"],
+                    task_type="orchestrator",
+                    name="chat_request",
+                    status="succeeded",
+                    started_at=float(chat_task["started_at"]),
+                    details="tool_first_path",
+                )
+                self._emit_state()
+                return fast_reply
+
             parsed, _ = self.orchestrator_client.chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -633,6 +863,14 @@ class SpatialAgent:
                 subagent="orchestrator",
                 keyframe_b64=self._latest_keyframe_b64(),
             )
+            self._finish_task(
+                task_id=chat_task["id"],
+                task_type="orchestrator",
+                name="chat_request",
+                status="succeeded",
+                started_at=float(chat_task["started_at"]),
+                details="llm_path",
+            )
             self._emit_state()
             return reply
 
@@ -642,6 +880,14 @@ class SpatialAgent:
             self.chat_history.append({"role": "assistant", "content": fallback})
             self.chat_history = self.chat_history[-20:]
             self._emit_thought(fallback, thought_type="error", subagent="orchestrator")
+            self._finish_task(
+                task_id=chat_task["id"],
+                task_type="orchestrator",
+                name="chat_request",
+                status="failed",
+                started_at=float(chat_task["started_at"]),
+                error=str(e),
+            )
             return fallback
 
     def set_goal(self, goal: str):
@@ -670,6 +916,66 @@ class SpatialAgent:
         self.previous_detection_keys = current_keys
         return new
 
+    def _mark_mission_progress(self, mission: Mission, reason: str):
+        mission.submaps_since_finding = 0
+        mission.last_progress_ts = time.time()
+        if mission.status == "stalled":
+            mission.status = "active"
+            mission.stall_reason = None
+            self._emit_task_event(
+                {
+                    "id": str(uuid.uuid4())[:12],
+                    "timestamp": time.time(),
+                    "task_type": "mission",
+                    "name": "mission_status",
+                    "status": "resumed",
+                    "mission_id": mission.id,
+                    "details": reason,
+                }
+            )
+            self._emit_action("mission_resumed", f"Resumed: {mission.category}", {"mission_id": mission.id})
+
+    def _stall_mission(self, mission: Mission, reason: str):
+        if mission.status != "completed":
+            mission.status = "stalled"
+            mission.stall_reason = reason
+            mission.stall_count += 1
+            self._emit_task_event(
+                {
+                    "id": str(uuid.uuid4())[:12],
+                    "timestamp": time.time(),
+                    "task_type": "mission",
+                    "name": "mission_status",
+                    "status": "stalled",
+                    "mission_id": mission.id,
+                    "details": reason,
+                }
+            )
+            self._emit_action(
+                "mission_stalled",
+                f"Stalled: {mission.category} ({reason})",
+                {"mission_id": mission.id},
+            )
+
+    def _update_mission_stall_states(self):
+        for mission in self.missions.values():
+            if mission.status != "active":
+                continue
+            if mission.submaps_since_finding < self.stall_submap_gap:
+                continue
+            if len(mission.found) == len(mission.queries) and mission.queries:
+                mission.status = "completed"
+                self._emit_action(
+                    "mission_completed",
+                    f"Completed: {mission.category} ({len(mission.found)}/{len(mission.queries)})",
+                    {"mission_id": mission.id},
+                )
+                continue
+            self._stall_mission(
+                mission,
+                reason=f"no_progress_for_{mission.submaps_since_finding}_submaps",
+            )
+
     def _route_detections(self, new_detections: list[dict[str, Any]]):
         for det in new_detections:
             query = str(det.get("query", "")).strip().lower()
@@ -680,13 +986,20 @@ class SpatialAgent:
             self.discovered_objects.setdefault(query, []).append(det)
 
             for mission in self.missions.values():
-                if mission.status != "active":
+                if mission.status == "completed":
                     continue
                 if query in mission.queries:
                     mission.found.add(query)
                     mission.findings.append(det)
-                    mission.submaps_since_finding = 0
                     mission.confidence = len(mission.found) / max(1, len(mission.queries))
+                    self._mark_mission_progress(mission, reason=f"detection:{query}")
+                    if mission.queries and len(mission.found) >= len(mission.queries):
+                        mission.status = "completed"
+                        self._emit_action(
+                            "mission_completed",
+                            f"Completed: {mission.category} ({len(mission.found)}/{len(mission.queries)})",
+                            {"mission_id": mission.id},
+                        )
 
             evidence = {
                 "matched_submap": det.get("matched_submap"),
@@ -702,7 +1015,7 @@ class SpatialAgent:
             )
 
         for mission in self.missions.values():
-            if mission.status != "active":
+            if mission.status == "completed":
                 continue
 
             has_new = any(str(d.get("query", "")).strip().lower() in mission.queries for d in new_detections)
@@ -710,7 +1023,8 @@ class SpatialAgent:
                 mission.submaps_since_finding += 1
 
             if (
-                mission.submaps_since_finding >= self.auto_complete_submap_gap
+                mission.status == "active"
+                and mission.submaps_since_finding >= self.auto_complete_submap_gap
                 and len(mission.found) > 0
                 and mission.confidence >= 0.5
             ):
@@ -720,6 +1034,7 @@ class SpatialAgent:
                     f"Completed: {mission.category} ({len(mission.found)}/{len(mission.queries)})",
                     {"mission_id": mission.id},
                 )
+        self._update_mission_stall_states()
 
     def _sync_detection_queries(self):
         active_queries: list[str] = []
@@ -770,10 +1085,15 @@ class SpatialAgent:
                 "status": m.status,
                 "confidence": m.confidence,
                 "findings_count": len(m.findings),
+                "last_progress_ts": m.last_progress_ts,
+                "stall_reason": m.stall_reason,
+                "stall_count": m.stall_count,
             }
             for m in self.missions.values()
         ]
 
+        with self._task_lock:
+            active_tasks = list(self._active_tasks.values())
         return {
             "enabled": self.enabled,
             "scene_description": self.scene_description,
@@ -787,6 +1107,10 @@ class SpatialAgent:
             "health": "degraded" if self.orchestrator_client.degraded_mode else "ok",
             "degraded_mode": self.orchestrator_client.degraded_mode,
             "runtime_v2_enabled": self.runtime_v2_enabled,
+            "active_tasks": active_tasks,
+            "orchestrator_busy": any(
+                task.get("task_type") == "orchestrator" for task in active_tasks
+            ),
         }
 
     def reset(self):
@@ -808,6 +1132,8 @@ class SpatialAgent:
             self._coverage_estimate = 0.0
             self._last_query_sync_ts = 0.0
             self._last_cycle_ts = 0.0
+            with self._task_lock:
+                self._active_tasks.clear()
 
         if self.on_queries_changed is not None:
             try:
@@ -867,6 +1193,12 @@ class SpatialAgent:
             self.emit("agent_action", data)
         except Exception as e:
             print(f"SpatialAgent[{self.session_id}] emit action error: {e}")
+
+    def _emit_task_event(self, payload: dict[str, Any]):
+        try:
+            self.emit("agent_task_event", payload)
+        except Exception as e:
+            print(f"SpatialAgent[{self.session_id}] emit task event error: {e}")
 
     def _emit_finding(
         self,
@@ -1042,13 +1374,73 @@ class SpatialAgent:
         raw = os.environ.get(env_name, default)
         return [part.strip() for part in raw.split(",") if part.strip()]
 
-    @staticmethod
-    def _safe_future_result(future, task_name: str, timeout: float = 12.0):
+    def _safe_future_result(
+        self,
+        future,
+        task_name: str,
+        timeout: float = 12.0,
+        task_id: Optional[str] = None,
+        started_at: Optional[float] = None,
+        task_type: str = "subagent",
+        mission_id: Optional[int] = None,
+    ):
+        t0 = started_at or time.time()
+        wait_slice = min(0.5, max(0.1, float(timeout)))
+        next_heartbeat = time.time() + self.task_heartbeat_s
         try:
-            return future.result(timeout=timeout)
+            while True:
+                remaining = timeout - (time.time() - t0)
+                if remaining <= 0:
+                    raise FuturesTimeout()
+                try:
+                    result = future.result(timeout=min(wait_slice, max(0.01, remaining)))
+                    if task_id is not None:
+                        self._finish_task(
+                            task_id=task_id,
+                            task_type=task_type,
+                            name=task_name,
+                            status="succeeded",
+                            started_at=t0,
+                            mission_id=mission_id,
+                        )
+                    return result
+                except FuturesTimeout:
+                    if task_id is not None and time.time() >= next_heartbeat:
+                        self._update_active_task(task_id, "heartbeat")
+                        self._emit_task_event(
+                            {
+                                "id": task_id,
+                                "timestamp": time.time(),
+                                "task_type": task_type,
+                                "name": task_name,
+                                "status": "heartbeat",
+                                "mission_id": mission_id,
+                            }
+                        )
+                        next_heartbeat = time.time() + self.task_heartbeat_s
         except FuturesTimeout:
             print(f"SpatialAgent task timed out: {task_name}")
+            if task_id is not None:
+                self._finish_task(
+                    task_id=task_id,
+                    task_type=task_type,
+                    name=task_name,
+                    status="timed_out",
+                    started_at=t0,
+                    mission_id=mission_id,
+                    error=f"{task_name} timed out",
+                )
             return None
         except Exception as e:
             print(f"SpatialAgent task error ({task_name}): {e}")
+            if task_id is not None:
+                self._finish_task(
+                    task_id=task_id,
+                    task_type=task_type,
+                    name=task_name,
+                    status="failed",
+                    started_at=t0,
+                    mission_id=mission_id,
+                    error=str(e),
+                )
             return None

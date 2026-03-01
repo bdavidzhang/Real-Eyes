@@ -20,6 +20,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 import base64
 import argparse
 import asyncio
@@ -231,6 +232,8 @@ def _build_agent_state_payload(sid: str) -> dict[str, Any]:
             "coverage_estimate": 0.0,
             "health": "disabled",
             "degraded_mode": False,
+            "active_tasks": [],
+            "orchestrator_busy": False,
         }
 
     payload = state.agent.get_state()
@@ -1192,8 +1195,36 @@ async def handle_agent_chat(sid, data):
     if not message:
         return
 
+    await sio.emit(
+        "agent_action",
+        {
+            "id": str(uuid.uuid4())[:8],
+            "timestamp": time.time(),
+            "action": "request_received",
+            "details": "Chat request received; executing.",
+        },
+        to=sid,
+    )
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_agent_executor, state.agent.handle_user_message, message)
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(_agent_executor, state.agent.handle_user_message, message),
+            timeout=float(os.environ.get("SPATIAL_CHAT_TIMEOUT_S", "25")),
+        )
+    except asyncio.TimeoutError:
+        await sio.emit(
+            "agent_task_event",
+            {
+                "id": str(uuid.uuid4())[:12],
+                "timestamp": time.time(),
+                "task_type": "orchestrator",
+                "name": "chat_request",
+                "status": "timed_out",
+                "error": "chat request timed out",
+            },
+            to=sid,
+        )
+        await sio.emit("agent_state", _build_agent_state_payload(sid), to=sid)
 
 
 @sio.on("agent_set_goal")

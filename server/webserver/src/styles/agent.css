@@ -159,6 +159,44 @@
   transition: width 0.4s ease;
 }
 
+.agent-active-tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-task-pill {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(225, 233, 245, 0.9);
+}
+
+.agent-task-pill.idle {
+  opacity: 0.8;
+}
+
+.agent-task-pill.status-started,
+.agent-task-pill.status-heartbeat {
+  border-color: rgba(107, 201, 255, 0.4);
+  background: rgba(40, 100, 143, 0.35);
+}
+
+.agent-task-pill.status-stalled,
+.agent-task-pill.status-timed_out {
+  border-color: rgba(255, 193, 108, 0.45);
+  background: rgba(132, 91, 28, 0.35);
+}
+
+.agent-task-pill.status-failed {
+  border-color: rgba(255, 107, 107, 0.48);
+  background: rgba(123, 48, 48, 0.35);
+}
+
 .agent-columns {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
@@ -389,6 +427,22 @@
   border-color: rgba(255, 109, 109, 0.46);
 }
 
+.agent-entry-task {
+  border-color: rgba(114, 214, 255, 0.34);
+  background: rgba(49, 101, 126, 0.24);
+}
+
+.agent-entry-task-succeeded {
+  border-color: rgba(112, 236, 186, 0.34);
+}
+
+.agent-entry-task-failed,
+.agent-entry-task-timed_out,
+.agent-entry-task-stalled {
+  border-color: rgba(255, 109, 109, 0.46);
+  background: rgba(124, 52, 52, 0.26);
+}
+
 #agent-missions {
   max-height: 230px;
   overflow-y: auto;
@@ -453,6 +507,16 @@
 .agent-mission-goal {
   font-size: 12px;
   color: rgba(224, 232, 243, 0.82);
+}
+
+.agent-mission-last-progress {
+  font-size: 10px;
+  color: rgba(214, 224, 238, 0.64);
+}
+
+.agent-mission-stall-reason {
+  font-size: 10px;
+  color: #ffd496;
 }
 
 .agent-mission-progress-row {
