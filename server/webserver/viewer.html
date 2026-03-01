@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Viewer — Open Reality</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <!-- Main 3D Canvas Container (overlays live inside so they're canvas-relative) -->
+    <div id="app">
+
+      <!-- Status Indicator -->
+      <div id="status" class="glass-panel">
+        <span id="status-dot" class="status-dot status-disconnected"></span>
+        <span id="status-text">Disconnected</span>
+        <span id="latency" style="display: none"></span>
+      </div>
+
+      <div id="viewerModeBadge" class="mode-badge" style="display: none;">DEMO MODE</div>
+
+      <!-- Info Panel -->
+      <div id="info-panel" class="glass-panel">
+        <div class="panel-header">
+          <span>Open Reality Live</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Frames</span>
+          </span>
+          <span class="stat-value" id="frame">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Submaps</span>
+          </span>
+          <span class="stat-value" id="submaps">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Loop Closures</span>
+          </span>
+          <span class="stat-value" id="loops">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Points</span>
+          </span>
+          <span class="stat-value" id="points">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Cameras</span>
+          </span>
+          <span class="stat-value" id="cameras">0</span>
+        </div>
+
+        <div class="stat-row">
+          <span class="stat-label">
+            <span>Update FPS</span>
+          </span>
+          <span class="stat-value" id="fps">0</span>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div id="settings-panel" class="glass-panel">
+        <div class="panel-header">Settings</div>
+
+        <div class="settings-section">
+          <label class="settings-label">Display Toggles</label>
+          <div class="toggle-row">
+            <span class="toggle-label">Points</span>
+            <button id="togglePointsBtn" class="toggle-btn active" title="P">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Cameras</span>
+            <button id="toggleCamsBtn" class="toggle-btn active" disabled title="C">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Grid</span>
+            <button id="toggleGridBtn" class="toggle-btn active" title="G">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Follow Camera</span>
+            <button id="followCamBtn" class="toggle-btn" disabled title="Follow">OFF</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Rotate 180°</span>
+            <button id="flipYBtn" class="toggle-btn" title="F">OFF</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Det. Labels</span>
+            <button id="toggleDetLabelsBtn" class="toggle-btn active" title="Toggle detection labels">ON</button>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-label">Det. Boxes</span>
+            <button id="toggleDetBoxesBtn" class="toggle-btn active" title="Toggle detection boxes">ON</button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-label">Point Size</label>
+          <div class="slider-container">
+            <input
+              type="range"
+              id="pointSizeSlider"
+              min="0.005"
+              max="0.1"
+              step="0.005"
+              value="0.02"
+            />
+            <span class="slider-value">0.02</span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-label">Actions</label>
+          <div class="settings-actions">
+            <button id="downloadSplatBtn" class="settings-action-btn" title="Download point cloud PLY">⬇ Download PLY</button>
+            <button id="resetBtn" class="settings-action-btn danger" disabled>Reset SLAM</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div id="controls" class="glass-panel">
+        <button id="connectBtn" class="primary">Connect</button>
+        <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+        <button id="stopDemoBtn" class="danger" style="display: none;">Stop Demo</button>
+        <button id="resetViewBtn">Reset View</button>
+        <button id="settingsBtn" class="icon" title="Settings (S)">⚙</button>
+        <a href="/sender.html" class="nav-link">Camera Streamer</a>
+        <a href="/" class="nav-link" id="backLink">Back</a>
+      </div>
+
+    </div>
+
+    <!-- Spatial Agent Panel (always-on sidebar) -->
+    <div id="agent-panel">
+      <div class="agent-head">
+        <div class="agent-brand">
+          <span class="agent-indicator"></span>
+          <div class="agent-brand-text">
+            <span class="agent-title">Spatial Command</span>
+            <span id="agent-health-pill" class="agent-health-pill">SYSTEM READY</span>
+          </div>
+        </div>
+        <button id="agent-toggle-btn" class="active">AUTONOMY ON</button>
+      </div>
+
+      <div class="agent-status-grid">
+        <div class="agent-status-card">
+          <span class="agent-status-label">Room</span>
+          <strong id="agent-room-type">Scanning...</strong>
+        </div>
+        <div class="agent-status-card">
+          <span class="agent-status-label">Coverage</span>
+          <strong id="agent-coverage-text">0%</strong>
+        </div>
+        <div class="agent-status-card">
+          <span class="agent-status-label">Submaps</span>
+          <strong id="agent-submaps">0</strong>
+        </div>
+        <div class="agent-status-card">
+          <span class="agent-status-label">Targets</span>
+          <strong id="agent-query-count">0</strong>
+        </div>
+      </div>
+      <div class="agent-coverage-track">
+        <div id="agent-coverage-bar"></div>
+      </div>
+      <div id="agent-active-tasks" class="agent-active-tasks">
+        <span class="agent-task-pill idle">No active tasks</span>
+      </div>
+
+      <div class="agent-columns">
+        <section class="agent-column">
+          <div class="agent-section-header">Timeline</div>
+          <div class="agent-feed-toolbar">
+            <div class="agent-feed-filters">
+              <button class="agent-feed-filter active" data-category="thought">
+                Thoughts <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="action">
+                Actions <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="finding">
+                Findings <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="tool">
+                Tools <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter" data-category="task">
+                Tasks <span class="agent-feed-filter-count">0</span>
+              </button>
+              <button class="agent-feed-filter active" data-category="ui">
+                UI <span class="agent-feed-filter-count">0</span>
+              </button>
+            </div>
+            <div class="agent-feed-actions">
+              <button id="agent-feed-pause" class="agent-feed-action">Pause</button>
+              <button id="agent-feed-clear" class="agent-feed-action">Clear</button>
+            </div>
+          </div>
+          <div id="agent-feed-paused" class="agent-feed-paused is-hidden"></div>
+          <div id="agent-activity-feed"></div>
+        </section>
+
+        <section class="agent-column">
+          <div class="agent-section-header">Mission Board</div>
+          <div class="mission-scroll">
+            <div id="agent-missions">
+              <div class="agent-missions-empty">No active missions</div>
+            </div>
+          </div>
+
+          <!-- Compact detection input -->
+          <div class="agent-section-header agent-section-header--with-count">
+            Object Detection
+            <span id="detectionCount" class="detection-count">0</span>
+          </div>
+          <div class="agent-detection-input">
+            <div class="detection-add-row">
+              <input type="text" id="detectionInput" class="agent-detection-inline"
+                placeholder="Add object..." autocomplete="off" />
+              <button id="setTargetsBtn" class="primary detection-btn detection-btn-sm">Add</button>
+              <button id="clearTargetsBtn" class="danger detection-btn detection-btn-sm">Clear</button>
+            </div>
+          </div>
+          <div id="activeQueriesList" class="active-queries-list"></div>
+
+          <!-- Unified Visual Context gallery — detection cards + agent snapshots -->
+          <div class="agent-section-header">Visual Context</div>
+          <div id="agent-context-gallery" class="agent-context-gallery">
+            <div id="obsCardList"></div>
+            <div id="detectionResultsList"></div>
+            <div class="agent-context-empty" id="agent-context-empty">No snapshots yet</div>
+          </div>
+        </section>
+      </div>
+
+      <div class="agent-chat-section">
+        <input
+          type="text"
+          id="agent-chat-input"
+          placeholder="Ask the agent..."
+          autocomplete="off"
+        />
+        <button id="agent-chat-send">Send</button>
+      </div>
+    </div>
+
+    <!-- Detection Preview Modal -->
+    <div id="detection-preview-overlay" class="preview-overlay hidden">
+      <div class="preview-modal">
+        <button id="closePreviewBtn" class="preview-close">&times;</button>
+        <h3 id="previewTitle" class="preview-title"></h3>
+        <div class="preview-images">
+          <div class="preview-image-wrap">
+            <span class="preview-label">Matched Keyframe</span>
+            <img id="previewKeyframe" class="preview-img" />
+          </div>
+          <div class="preview-image-wrap">
+            <span class="preview-label">SAM 3 Segmentation</span>
+            <img id="previewMask" class="preview-img" />
+          </div>
+        </div>
+        <div id="previewMeta" class="preview-meta"></div>
+      </div>
+    </div>
+
+    <!-- Keyboard Shortcut Styles -->
+    <style>
+      kbd {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 4px;
+        padding: 3px 7px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        font-weight: 500;
+        display: inline-block;
+        margin-right: 8px;
+        color: #999;
+      }
+    </style>
+
+    <!-- Load TypeScript Application -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

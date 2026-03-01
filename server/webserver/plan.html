@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mission Brief — Open Reality</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <canvas id="meshBg" class="mesh-bg"></canvas>
+  <div id="app">
+    <div class="plan-container">
+      <!-- Header -->
+      <div class="plan-header anim-enter anim-enter-d1">
+        <p class="plan-kicker">OPEN REALITY // MISSION BRIEF</p>
+        <h1 class="plan-title">Mission <span class="gradient-text">Brief</span></h1>
+        <p class="plan-subtitle">Review your targets. Confirm your sweep. Launch.</p>
+      </div>
+
+      <!-- Pipeline Progress -->
+      <div class="pipeline anim-enter anim-enter-d2">
+        <div class="pipeline-step active" id="pipelineStep1">
+          <span class="pipeline-num">1</span>
+          <span class="pipeline-label">Analyze Scene</span>
+        </div>
+        <div class="pipeline-connector"></div>
+        <div class="pipeline-step" id="pipelineStep2">
+          <span class="pipeline-num">2</span>
+          <span class="pipeline-label">Lock Targets</span>
+        </div>
+        <div class="pipeline-connector"></div>
+        <div class="pipeline-step" id="pipelineStep3">
+          <span class="pipeline-num">3</span>
+          <span class="pipeline-label">Deploy</span>
+        </div>
+      </div>
+
+      <!-- Agent Broadcast -->
+      <div class="agent-broadcast glass-panel glow-border anim-enter anim-enter-d3">
+        <p class="agent-label">AGENT VOICE</p>
+        <p id="agentLine" class="agent-line typing-cursor">Initializing spatial intelligence...</p>
+      </div>
+
+      <!-- Agent Mission Intro -->
+      <div id="agentIntroBox" class="agent-intro-box glass-panel anim-enter anim-enter-d4" style="display: none;">
+        <p class="agent-label">MISSION DIRECTIVE</p>
+        <p id="agentIntroLine" class="agent-intro-line"></p>
+      </div>
+
+      <!-- Loading State -->
+      <div id="loadingState" class="loading-state">
+        <div class="loading-spinner"></div>
+        <p id="loadingLine">Building tactical object priorities...</p>
+      </div>
+
+      <!-- Plan Content -->
+      <div id="planContent" class="plan-content" style="display: none;">
+        <!-- Objects Section -->
+        <div class="plan-section glass-panel anim-enter">
+          <h3 class="section-title">Target Stack</h3>
+          <p class="section-subtitle">Add or remove any objects before launch.</p>
+          <div id="objectsList" class="objects-list"></div>
+          <div class="add-object-form">
+            <input
+              type="text"
+              id="customObjectInput"
+              class="glass-input"
+              placeholder="Add custom target..."
+            />
+            <button id="addObjectBtn" class="btn-secondary">Add</button>
+          </div>
+        </div>
+
+        <!-- Mission Pulse -->
+        <div class="plan-section glass-panel anim-enter">
+          <h3 class="section-title">Mission Pulse</h3>
+          <p class="feature-justification">Open Reality scans continuously, adapts object confidence in real time, and calls out high-value hits instantly.</p>
+        </div>
+
+        <!-- QR Camera Section -->
+        <div class="plan-section glass-panel qr-section anim-enter">
+          <h3 class="section-title">Connect Your Phone Camera</h3>
+          <p class="section-subtitle">Scan the QR code to open the camera streamer on your phone.</p>
+          <div class="qr-layout">
+            <img id="cameraQrImage" class="camera-qr-image" alt="QR code for camera page" />
+            <div class="qr-meta">
+              <a id="cameraPageLink" class="camera-page-link" target="_blank" rel="noopener noreferrer"></a>
+              <p id="cameraQrHint" class="camera-qr-hint"></p>
+            </div>
+          </div>
+        </div>
+
+        <button id="confirmBtn" class="btn-glow btn-large">
+          Deploy Mission
+        </button>
+      </div>
+
+      <!-- Error State -->
+      <div id="errorState" class="error-state" style="display: none;">
+        <p>Unable to generate plan. Please try again.</p>
+        <button id="retryBtn" class="btn-secondary">Retry</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/plan.ts"></script>
+</body>
+</html>

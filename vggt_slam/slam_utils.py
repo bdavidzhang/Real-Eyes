@@ -91,6 +91,10 @@ def compute_image_embeddings(model, preprocess, image_paths, batch_size=64, devi
         img = Image.open(p).convert("RGB")
         imgs.append(preprocess(img))
 
+    # Guard: if no images loaded (e.g. all paths were invalid), return empty embeddings
+    if not imgs:
+        return np.zeros((0,), dtype=np.float32)
+
     # Stack into a single tensor
     imgs = torch.stack(imgs).to(device)
 

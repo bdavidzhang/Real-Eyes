@@ -1,0 +1,472 @@
+body {
+  background:
+    radial-gradient(circle at 20% 12%, rgba(0, 240, 255, 0.06), transparent 34%),
+    radial-gradient(circle at 80% 18%, rgba(168, 85, 247, 0.04), transparent 40%),
+    var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+.mesh-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.52;
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Container ── */
+
+.plan-container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 56px 24px 64px;
+}
+
+/* ── Header ── */
+
+.plan-header {
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+.plan-kicker {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.plan-title {
+  margin: 8px 0 10px;
+  font-size: clamp(34px, 5.6vw, 54px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.plan-subtitle {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-secondary);
+}
+
+/* ── Pipeline Progress ── */
+
+.pipeline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-bottom: 24px;
+}
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+  transition: all 0.4s ease;
+  opacity: 0.45;
+}
+
+.pipeline-step.active {
+  opacity: 1;
+  border-color: rgba(0, 240, 255, 0.4);
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.pipeline-step.completed {
+  opacity: 1;
+  border-color: rgba(0, 240, 255, 0.5);
+  background: rgba(0, 240, 255, 0.12);
+}
+
+.pipeline-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: background 0.4s ease;
+}
+
+.pipeline-step.active .pipeline-num,
+.pipeline-step.completed .pipeline-num {
+  background: var(--accent-cyan);
+  color: #000;
+}
+
+.pipeline-label {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pipeline-connector {
+  width: 32px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+/* ── Agent Broadcast ── */
+
+.agent-broadcast {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border-radius: 10px;
+}
+
+.agent-broadcast::after {
+  content: '';
+  position: absolute;
+  left: -70%;
+  top: 0;
+  width: 52%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.08), transparent);
+  animation: scan 5.5s ease-in-out infinite;
+}
+
+.agent-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.agent-line {
+  margin: 0;
+  font-size: clamp(16px, 2.5vw, 20px);
+  line-height: 1.45;
+  font-weight: 500;
+  max-width: 94%;
+}
+
+/* ── Agent Mission Intro ── */
+
+.agent-intro-box {
+  padding: 16px 18px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.agent-intro-line {
+  margin: 0;
+  font-size: clamp(14px, 2vw, 16px);
+  line-height: 1.55;
+  font-weight: 400;
+  color: var(--text-secondary);
+  max-width: 94%;
+}
+
+/* ── Loading State ── */
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 42px 20px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+}
+
+.loading-state p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spin 0.95s linear infinite;
+}
+
+/* ── Plan Content ── */
+
+.plan-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.plan-section {
+  padding: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+}
+
+.section-title {
+  margin: 0 0 8px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.section-subtitle {
+  margin: 0 0 14px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* ── Object Chips ── */
+
+.objects-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.object-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  background: rgba(0, 240, 255, 0.08);
+  color: #e9f1ff;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  animation: fadeSlideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.object-chip:hover {
+  border-color: rgba(0, 240, 255, 0.6);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
+}
+
+.object-chip .remove-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 999px;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+}
+
+.object-chip .remove-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* ── Add Object Form ── */
+
+.add-object-form {
+  display: flex;
+  gap: 8px;
+}
+
+.add-object-form .glass-input {
+  flex: 1;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: var(--transition);
+  font-weight: 500;
+  font-family: var(--font-body);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Feature Justification ── */
+
+.feature-justification {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+
+/* ── QR Section ── */
+
+.qr-layout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
+  align-items: center;
+}
+
+.camera-qr-image {
+  width: 148px;
+  height: 148px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  background: #ffffff;
+  padding: 8px;
+  transition: box-shadow 0.3s ease;
+}
+
+.camera-qr-image:hover {
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.15);
+}
+
+.qr-meta {
+  min-width: 0;
+}
+
+.camera-page-link {
+  display: block;
+  color: #dbe8ff;
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.camera-page-link:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.camera-qr-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* ── Launch Button ── */
+
+.btn-large {
+  width: 100%;
+  padding: 16px;
+  font-size: 17px;
+  font-weight: 600;
+  margin-top: 8px;
+  animation: pulseGlow 3s ease-in-out infinite;
+}
+
+/* ── Error State ── */
+
+.error-state {
+  text-align: center;
+  padding: 42px 20px;
+}
+
+.error-state p {
+  margin: 0 0 12px;
+  color: var(--text-secondary);
+}
+
+/* ── Staggered Section Reveal ── */
+
+.plan-content .plan-section:nth-child(1) { animation-delay: 0.05s; }
+.plan-content .plan-section:nth-child(2) { animation-delay: 0.15s; }
+.plan-content .plan-section:nth-child(3) { animation-delay: 0.25s; }
+.plan-content .btn-large { animation: fadeSlideUp 0.6s 0.35s cubic-bezier(0.16,1,0.3,1) forwards, pulseGlow 3s 1s ease-in-out infinite; opacity: 0; }
+
+/* ── Keyframes ── */
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes scan {
+  0%,
+  100% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  45%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 760px) {
+  .plan-container {
+    padding: 36px 16px 42px;
+  }
+
+  .plan-subtitle {
+    font-size: 15px;
+  }
+
+  .agent-line {
+    font-size: 16px;
+    max-width: 100%;
+  }
+
+  .add-object-form {
+    flex-direction: column;
+  }
+
+  .qr-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .camera-qr-image {
+    width: 148px;
+    height: 148px;
+    justify-self: center;
+  }
+
+  .pipeline {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .pipeline-connector {
+    width: 16px;
+  }
+
+  .pipeline-label {
+    font-size: 11px;
+  }
+}

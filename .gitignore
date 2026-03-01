@@ -1,3 +1,6 @@
+/modal_results
+
+
 # Ignore some files from the installation/demo
 office_loop/
 gtsam_with_sl4/
@@ -31,6 +34,8 @@ __pycache__/
 *.text
 *.pcd
 *.json
+!server/webserver/package.json
+!server/webserver/package-lock.json
 
 datasets
 logs

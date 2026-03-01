@@ -38,12 +38,16 @@ class Solver:
     def __init__(self,
         init_conf_threshold: float,  # represents percentage (e.g., 50 means filter lowest 50%)
         lc_thres: float = 0.80,
-        vis_voxel_size: float = None):
-        
+        vis_voxel_size: float = None,
+        skip_viewer: bool = False):
+
         self.init_conf_threshold = init_conf_threshold
         self.vis_voxel_size = vis_voxel_size
 
-        self.viewer = Viewer()
+        if skip_viewer:
+            self.viewer = None
+        else:
+            self.viewer = Viewer()
 
         self.flow_tracker = FrameTracker()
         self.map = GraphMap()
@@ -59,7 +63,29 @@ class Solver:
         self.loop_closure_timer = Accumulator()
         self.clip_timer = Accumulator()
 
+        self.clip_model = None
+        self.clip_preprocess = None
+
+    def set_clip_model(self, clip_model, clip_preprocess):
+        """Store CLIP model and preprocess on the solver instance."""
+        self.clip_model = clip_model
+        self.clip_preprocess = clip_preprocess
+
+    def reset(self):
+        """Reset SLAM state without reloading models."""
+        self.flow_tracker = FrameTracker()
+        self.map = GraphMap()
+        self.graph = PoseGraph()
+        self.image_retrieval = ImageRetrieval()
+        self.current_working_submap = None
+        self.temp_count = 0
+        self.vggt_timer = Accumulator()
+        self.loop_closure_timer = Accumulator()
+        self.clip_timer = Accumulator()
+
     def set_point_cloud(self, points_in_world_frame, points_colors, name, point_size):
+        if self.viewer is None:
+            return
         if self.vis_voxel_size is not None:
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(points_in_world_frame.astype(np.float64))
@@ -83,6 +109,8 @@ class Solver:
         self.set_point_cloud(points_in_world_frame, points_colors, name, 0.001)
 
     def set_submap_poses(self, submap):
+        if self.viewer is None:
+            return
         # Add the camera poses to the visualization.
         extrinsics = submap.get_all_poses_world(self.graph)
         images = submap.get_all_frames()
@@ -295,8 +323,13 @@ class Solver:
         pixel_coords = torch.stack((y_coords, x_coords), dim=1)
         return pixel_coords
 
-    def run_predictions(self, image_names, model, max_loops, clip_model, clip_preprocess):
+    def run_predictions(self, image_names, model, max_loops, clip_model=None, clip_preprocess=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Fall back to stored clip model/preprocess if not passed
+        if clip_model is None:
+            clip_model = self.clip_model
+        if clip_preprocess is None:
+            clip_preprocess = self.clip_preprocess
         t1 = time.time()
         with self.vggt_timer:
             images = load_and_preprocess_images(image_names).to(device)

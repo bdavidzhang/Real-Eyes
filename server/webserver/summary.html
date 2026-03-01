@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Summary — Open Reality</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Bar -->
+      <div class="summary-topbar">
+        <a href="/viewer.html" class="back-button">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Back to Viewer
+        </a>
+        <h1 class="topbar-title">SLAM Summary</h1>
+        <div class="topbar-stats">
+          <span id="statPoints">0 points</span>
+          <span class="stat-sep">·</span>
+          <span id="statCameras">0 cameras</span>
+          <span class="stat-sep">·</span>
+          <span id="statSubmaps">0 submaps</span>
+        </div>
+      </div>
+
+      <!-- Main Content: Two-column layout -->
+      <div class="summary-main">
+        <!-- Left Column: Minimap + Chat -->
+        <div class="summary-left">
+          <!-- Enlarged 2D Minimap -->
+          <div class="summary-section minimap-section">
+            <h2 class="section-title">2D Map Overview</h2>
+            <canvas id="summaryMinimap" width="500" height="500"></canvas>
+          </div>
+
+          <!-- Chatbox -->
+          <div class="summary-section chat-section">
+            <h2 class="section-title">AI Assistant</h2>
+            <p class="section-subtitle">Ask questions about detected objects and the scanned environment.</p>
+            <div id="chatMessages" class="chat-messages">
+              <div class="chat-message assistant">
+                <div class="chat-bubble">
+                  Hello! I can answer questions about the objects detected in your scan. What would you like to know?
+                </div>
+              </div>
+            </div>
+            <form id="chatForm" class="chat-input-form">
+              <input
+                type="text"
+                id="chatInput"
+                class="chat-input"
+                placeholder="Ask about detected objects..."
+                autocomplete="off"
+              />
+              <button type="submit" class="chat-send-btn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Right Column: 3D Viewer -->
+        <div class="summary-right">
+          <div class="summary-section viewer-section">
+            <h2 class="section-title">3D Point Cloud</h2>
+            <div id="viewer3d" class="viewer-container"></div>
+            <div class="viewer-controls">
+              <button id="resetViewBtn" class="viewer-ctrl-btn">Reset View</button>
+              <button id="toggleGridBtn" class="viewer-ctrl-btn active">Grid</button>
+              <button id="downloadPlyBtn" class="viewer-ctrl-btn">⬇ Download PLY</button>
+              <label class="point-size-ctrl">
+                <span>Size</span>
+                <input type="range" id="pointSizeSlider" min="0.005" max="0.1" step="0.005" value="0.02" />
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom: Detection Debug Pipeline -->
+      <div class="summary-bottom">
+        <div class="summary-section detection-section">
+          <h2 class="section-title">Object Detection (CLIP + SAM3 Pipeline)</h2>
+          <p class="section-subtitle">Run the full detection pipeline: CLIP similarity scoring → SAM3 segmentation → 3D bounding box → deduplication.</p>
+
+          <div class="det-controls-row">
+            <div class="det-query-group">
+              <label>QUERIES (one per line or comma-separated)</label>
+              <textarea id="detectionInput" rows="2" placeholder="e.g. chair, monitor, whiteboard"></textarea>
+            </div>
+            <div class="det-threshold-group">
+              <label>CLIP threshold</label>
+              <input type="number" id="clipThreshold" value="0.2" step="0.05" min="0" max="1" />
+            </div>
+            <div class="det-threshold-group">
+              <label>SAM threshold</label>
+              <input type="number" id="samThreshold" value="0.3" step="0.05" min="0" max="1" />
+            </div>
+            <button id="detectBtn" class="submit-button" disabled>
+              <span id="detectBtnText">Search</span>
+            </button>
+          </div>
+
+          <div id="detStatusBar" class="det-status-bar hidden"></div>
+          <div id="detFilterBtns" class="det-filter-bar hidden"></div>
+
+          <div id="detEmptyState" class="det-empty-state">
+            Connect to the SLAM server and enter a query to run the detection pipeline.
+          </div>
+
+          <div id="detResultsWrap" class="hidden">
+            <div id="detResultsGrid" class="det-results-grid"></div>
+            <div id="detFinalDetections" class="det-final-detections"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/summary.ts"></script>
+  </body>
+</html>

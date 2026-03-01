@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Open Reality</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <!-- Mesh Background -->
+  <canvas id="meshBg" class="mesh-bg"></canvas>
+
+  <!-- 3D Background -->
+  <div id="hero-3d-canvas" class="hero-canvas"></div>
+
+  <div class="demo-quick-launch glass-panel glow-border">
+    <label class="demo-label">Demo Mode</label>
+    <div id="demoVideoGrid" class="demo-grid"></div>
+    <div class="demo-row">
+      <button id="demoStartBtn" type="button" class="btn-secondary demo-start-btn">Use Demo</button>
+    </div>
+  </div>
+
+  <!-- Content Overlay -->
+  <div class="landing-overlay">
+    <div class="landing-content">
+      <p class="landing-kicker anim-enter anim-enter-d1">REAL-TIME SPATIAL INTELLIGENCE</p>
+      <h1 class="landing-title anim-enter anim-enter-d2">Open <span class="gradient-text">Reality</span></h1>
+      <p class="landing-tagline anim-enter anim-enter-d3">
+        Point your phone. Your AI builds the world.
+      </p>
+
+      <div class="feature-badges anim-enter anim-enter-d4">
+        <span class="badge">Real-time 3D SLAM</span>
+        <span class="badge">Open-Set Detection</span>
+        <span class="badge">Spatial AI Agent</span>
+        <span class="badge">Works from Any Phone</span>
+      </div>
+
+      <form id="promptForm" class="prompt-form glass-panel glow-border anim-enter anim-enter-d5">
+        <textarea
+          id="promptInput"
+          class="prompt-input glass-input"
+          placeholder="Describe your scene and what matters... (e.g., 'I'm a firefighter entering a burning building')"
+          rows="3"
+          required
+        ></textarea>
+        <button type="submit" class="btn-glow">
+          Generate Mission Plan
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/src/landing.ts"></script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Detection Debug — Full Pipeline</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="debug-app">
+      <!-- Top bar -->
+      <header id="topbar">
+        <div class="topbar-left">
+          <a href="/features.html" class="back-link">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Back
+          </a>
+          <h1 class="topbar-title">Detection Debug</h1>
+          <span class="topbar-badge">Full Pipeline</span>
+        </div>
+        <div class="topbar-right">
+          <span id="connectionDot" class="conn-dot disconnected"></span>
+          <span id="connectionText" class="conn-text">Disconnected</span>
+          <span id="mapStats" class="map-stats"></span>
+        </div>
+      </header>
+
+      <!-- Query controls -->
+      <section id="controls">
+        <div class="controls-row">
+          <div class="query-input-group">
+            <label for="queryInput">Queries (one per line or comma-separated)</label>
+            <textarea
+              id="queryInput"
+              rows="3"
+              placeholder="backpack&#10;chair&#10;monitor"
+            ></textarea>
+          </div>
+          <div class="threshold-group">
+            <label for="thresholdInput">CLIP threshold</label>
+            <input
+              type="number"
+              id="thresholdInput"
+              value="0.20"
+              min="0"
+              max="1"
+              step="0.01"
+            />
+          </div>
+          <div class="threshold-group">
+            <label for="samThresholdInput">SAM threshold</label>
+            <input
+              type="number"
+              id="samThresholdInput"
+              value="0.30"
+              min="0"
+              max="1"
+              step="0.01"
+            />
+          </div>
+          <div class="threshold-group">
+            <label for="topKInput">Top-K frames / submap</label>
+            <input
+              type="number"
+              id="topKInput"
+              value="3"
+              min="1"
+              max="32"
+              step="1"
+            />
+          </div>
+          <button id="searchBtn" class="btn btn-primary" disabled>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="2"/>
+              <path d="M11 11L14 14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Run Detection
+          </button>
+          <button id="connectBtn" class="btn btn-secondary">Connect</button>
+        </div>
+        <div id="statusBar" class="status-bar hidden"></div>
+      </section>
+
+      <!-- Results area -->
+      <main id="results">
+        <div id="emptyState" class="empty-state">
+          <p>Connect to the SLAM server and enter object queries to run the full detection pipeline.<br/>
+          Uses the same code path as production: CLIP embedding → cosine similarity → SAM 3 segmentation → 3D bounding box → deduplication.</p>
+        </div>
+        <div id="resultsWrap" class="hidden">
+          <div id="filterBtns" class="filter-bar hidden"></div>
+          <div id="resultsGrid" class="results-grid"></div>
+          <div id="finalDetections" class="final-detections"></div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/detection-debug.ts"></script>
+  </body>
+</html>

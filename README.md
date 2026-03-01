@@ -1,185 +1,250 @@
 <div align="center">
-  <h1>VGGT-SLAM 2.0</h1>
 
-  <p>
-    <strong>VGGT-SLAM</strong> 
-    <a href="https://arxiv.org/abs/2505.12549">
-      <img src="https://img.shields.io/badge/arXiv-b33737?logo=arXiv" alt="arXiv" style="vertical-align:middle">
-    </a>
-    &nbsp;&nbsp;&nbsp;&nbsp;
-    <strong>VGGT-SLAM 2.0</strong> 
-    <a href="https://arxiv.org/abs/2601.19887">
-      <img src="https://img.shields.io/badge/arXiv-b33737?logo=arXiv" alt="arXiv" style="vertical-align:middle">
-    </a>
-  </p>
+# Open Reality
 
-  <br />
+### One phone. Any space. Real spatial intelligence.
 
-  <img src="assets/vggt_slam_demo.gif" alt="VGGT-SLAM" width="95%"/>
+**HackIllinois 2026 — Modal Track**
 
-  <p><strong><em>VGGT-SLAM 2.0: Real-time Dense Feed-forward Scene Reconstruction</em></strong></p>
+<br />
 
-  <p>
-    <a href="https://dominic101.github.io/DominicMaggio/"><strong>Dominic Maggio</strong></a> &nbsp;·&nbsp;
-    <a href="https://lucacarlone.mit.edu/"><strong>Luca Carlone</strong></a>
-  </p>
+<img src="assets/vggt_slam_demo.gif" alt="Open Reality" width="95%"/>
+
+<br />
+
+Point any phone at a room — no app, no hardware — and a live 3D map builds in real time on Modal's H100 GPU. An AI agent finds objects by name, pins them in 3D, and answers spatial questions using real geometry.
+
+<br />
+
+[Live Demo](#live-demo) · [How It Works](#how-it-works) · [Deploy It Yourself](#deploy-it-yourself) · [Architecture](#architecture)
+
 </div>
 
 ---
 
-# This repo contains the code for VGGT-SLAM 2.0 (located here) and VGGT-SLAM (located on the version1.0 branch of this repo).
+## The Problem
 
-## 📚 Table of Contents
-* [💻 Installation](#installation-of-vGGT-sLAM)
-* [🚀 Quick Start](#quick-start)
-* [📊 Running Evaluations](#running-evaluations)
-* [📄 News and Updates](#News-and-Updates)
-* [📄 Paper Citation](#citation)
+Every year, first responders walk into buildings they've never seen. Search-and-rescue teams navigate rubble without a map. Visually impaired people enter new spaces with no spatial context.
 
----
+AI could help — if it could actually see.
 
-## Installation of VGGT-SLAM
+Today's AI agents are spatially blind. They process pixels and text, but have no concept of *where* things are in 3D space. The tools that do provide spatial maps — LiDAR rigs, depth cameras, survey hardware — cost tens of thousands of dollars and require trained operators. Spatial intelligence has stayed locked inside robotics labs.
 
-Clone VGGT-SLAM:
-
-```
-git clone https://github.com/MIT-SPARK/VGGT-SLAM
-```
-
-```
-cd VGGT-SLAM
-```
-
-### Create and activate a new conda environment
-
-```
-conda create -n vggt-slam python=3.11
-```
-
-```
-conda activate vggt-slam
-```
-
-### Make the setup script executable and run it
-This step will automatically download all 3rd party packages including Perception Encoder, SAM 3, and our fork of VGGT. More details on the license for Perception Encoder 
-can be found [here](https://github.com/facebookresearch/perception_models/blob/main/LICENSE.PE), for SAM3 can be found [here](https://github.com/facebookresearch/sam3/blob/main/LICENSE), and for VGGT can be found [here](https://github.com/facebookresearch/vggt/blob/main/LICENSE.txt). Note that we only use SAM 3 and Perception Encoder for optional open-set 3D object detection.
-
-```
-chmod +x setup.sh
-./setup.sh
-```
+**Open Reality breaks that barrier.**
 
 ---
 
-## Quick Start
+## What We Built
 
-run `python main.py --image_folder /path/to/image/folder --max_loops 1 --vis_map` replacing the image path with your folder of images. 
-This will create a visualization in viser which shows the incremental construction of the map.
+Open Reality is a cloud-native spatial AI platform. Describe your task. Point a phone. An AI agent maps your space in real time, finds your targets, and answers spatial questions — from any browser, from anywhere.
 
-As an example, we provide a folder of test images in `office_loop.zip` which will generate the following map. Using the default parameters will
-result in a single loop closure towards the end of the trajectory. Unzip the folder and set its path as the arguments for `--image_folder`, e.g.,
+### The Experience
 
+1. **Describe your mission** — *"I'm a paramedic doing a safety sweep."*
+2. **Get a spatial plan** — the AI agent generates what to look for and how to move through the space.
+3. **Open the camera** — no app install. Just a link in your phone's browser.
+4. **Walk the space** — a dense 3D point cloud builds live as you move.
+5. **The agent finds your targets** — objects are detected, pinned in 3D, and available for spatial Q&A.
+
+### Agentic Intelligence
+
+Open Reality doesn't just map. It reasons about what it sees.
+
+- **Intent-driven planning** — before a frame is captured, the agent interprets your goal and builds a typed spatial action plan. A firefighter's plan surfaces extinguishers and standpipe connections. A crime scene investigator's plan surfaces evidence markers. The agent understands the difference.
+- **Continuous detection** — as the map grows, the agent automatically scans every new submap for your targets. No user action needed.
+- **Retroactive re-search** — add a new target mid-scan and the agent immediately re-runs detection on everything it's already seen. Its knowledge of the space updates instantly, backwards in time.
+- **Spatial Q&A** — after the scan, the AI holds the full 3D context. *"Is the fire extinguisher accessible from the north stairwell?"* gets answered with actual geometry — not a guess.
+
+---
+
+## Why Modal
+
+The inference pipeline — a 1-billion-parameter vision model, CLIP scoring on every submap, SAM3 segmentation — is far too heavy for a laptop and too latency-sensitive for a slow API call. Modal makes real-time spatial AI possible.
+
+| | |
+|---|---|
+| **H100 GPU** | Three heavy models in sequence at real-time speed. No dropped frames. |
+| **Warm Containers** | No cold starts between WebSocket frames. Inference hits in under 100ms per submap. |
+| **Modal Volumes** | VGGT-1B (4 GB) + DINO-Salad weights cached across runs. First inference in seconds, not minutes. |
+| **Modal Tunnel** | Provides the HTTPS endpoint the phone camera requires to stream. Zero SSL config. |
+| **One Command** | `modal deploy modal_streaming.py` — stable public URL, live for anyone. |
+
+This is Modal the way it's meant to be used: serious inference, at real-time speed, accessible from a link.
+
+---
+
+## Live Demo
+
+Scan the QR code at our booth, or visit the deployed URL. Point your phone at anything in the room. Watch the 3D map build in real time. Ask the agent to find something.
+
+No app. No hardware. Just a browser.
+
+---
+
+## Deploy It Yourself
+
+### Prerequisites
+
+- Python 3.11+
+- [Modal](https://modal.com) account with GPU access
+- [Conda](https://docs.conda.io/en/latest/) (recommended)
+
+### Installation
+
+```bash
+git clone https://github.com/bdavidzhang/Real-Eyes.git
+cd Real-Eyes
+
+conda create -n open-reality python=3.11
+conda activate open-reality
+
+chmod +x setup.sh && ./setup.sh
 ```
+
+The setup script installs all dependencies and clones third-party models (VGGT, DINO-Salad, Perception Encoder, SAM3) into `third_party/`.
+
+### Cloud Deployment (Modal) — Recommended
+
+```bash
+# One-command production deployment — stable URL, always-on
+modal deploy modal_streaming.py
+
+# Development mode with auto-reload
+modal serve modal_streaming.py
+
+# Pre-cache model weights (optional, speeds up first run)
+modal run modal_streaming.py::app.download_models
+```
+
+The streaming server keeps an H100 container warm, serves the frontend as static files built at image creation time, and handles concurrent clients via WebSocket.
+
+### Batch Processing (Modal)
+
+```bash
+# Process a folder of images on a remote A100
+modal run modal_app.py --image-folder ./office_loop --submap-size 16 --max-loops 1
+```
+
+Uploads your images, runs full SLAM, and downloads poses + dense point clouds to `./modal_results/`.
+
+### Local Mode
+
+```bash
+# Run the streaming server locally
+python -m server.app --port 5000
+
+# Or run offline SLAM with Viser visualization (localhost:8080)
+python main.py --image_folder /path/to/images --max_loops 1 --vis_map
+
+# Quick test with bundled sample data
 unzip office_loop.zip
+python main.py --image_folder office_loop --max_loops 1 --vis_map
 ```
-
-and then run the below command:
-
-```
-python3 main.py --image_folder office_loop --max_loops 1 --vis_map
-```
-
-Use the `--run_os` flag to enable 3D open-set object detection. This will prompt the user for text queries and plot a 3D bounding box of the detection on the map in viser. The office loop scene does not have very many interesting objects, but some example queries that can be used are "coffee machine", "sink", "printer", "cone", and "refrigerator." For some example scenes with more interesting objects, check out the Clio apartment and cubicle scene which can be downloaded 
-from [here](https://www.dropbox.com/scl/fo/5bkv8rsa2xvwmvom6bmza/AOc8VW71kuZCgQjcw_REbWA?rlkey=wx1njghufcxconm1znidc1hgw&e=1&st=c809h8h3&dl=0).
-
-<p align="center">
-  <img src="assets/office_loop_figure.png" width="300">
-</p>
-
 
 ### Collecting Custom Data
 
-To quickly collect a test on a custom dataset, you can record a trajectory with a cell phone and convert the MOV file to a folder of images with:
+Record a video with any phone and extract frames:
 
+```bash
+ffmpeg -i /path/to/video.MOV -vf "fps=10" /path/to/frames/frame_%04d.jpg
 ```
-mkdir <desired_location>/img_folder
-```
 
-And then, run the command below:
+Use horizontal video for best results. Images are sorted by the numeric value in their filename.
 
-```
-ffmpeg -i /path/to/video.MOV -vf "fps=10" <desired_location>/img_folder/frame_%04d.jpg
-```
-Note while vertical cell phone videos can work, to avoid images being cropped it is recommended to use horizontal videos. 
+### Key Parameters
 
-### Adjusting Parameters
-
-See main.py or run `--help` from main.py to view all parameters. 
-
-For visualizing larger datasets, displaying all 3D points in Viser can either slow or crash 
-the visualizer. One way to mitigate this is to sparsify the point cloud that is sent to Viser which can be done with `--vis_voxel_size 0.005`. Increasing the number will decrease the number of displayed points. Note that this does not affect the number of points stored or used internally in VGGT-SLAM.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--submap_size` | 16 | Frames per submap batch |
+| `--min_disparity` | 50 | Optical flow threshold for keyframe selection |
+| `--conf_threshold` | 25 | Filter bottom N% lowest-confidence points |
+| `--lc_thres` | 0.95 | Loop closure similarity threshold |
+| `--max_loops` | 0 | Enable loop closure (0 or 1) |
+| `--vis_voxel_size` | — | Downsample point cloud for visualization |
+| `--run_os` | off | Enable open-set 3D object detection |
 
 ---
 
-## Running Evaluations
-
-To automatically run evaluation on TUM and 7-Scenes datasets, first install the datasets using the provided download instructions from [MASt3R-SLAM](https://github.com/rmurai0610/MASt3R-SLAM?tab=readme-ov-file#examples). Set the download location of MASt3R-SLAM by setting *abs_dir* in the bash scripts 
-*/evals/eval_tum.sh* and */evals/eval_7scenes.sh*
-
-#### In Tum Dataset
-
-To run on TUM, run `./evals/eval_tum.sh <w>` and then run `python evals/process_logs_tum.py --submap_size <w>` to analyze and print the results, where w is 
-the submap size, for example:
+## Architecture
 
 ```
-./evals/eval_tum.sh 32
+Phone Camera
+    ↓  WebSocket stream (HTTPS via Modal tunnel)
+Keyframe Selection
+    Lucas-Kanade optical flow — skip frames without motion
+    ↓
+VGGT-1B Vision Model
+    Predicts dense depth + camera pose per frame
+    No GPS. No depth sensor. Just pixels.
+    ↓
+CLIP + SAM3
+    CLIP scores every submap against target queries
+    SAM3 segments matches → projects to 3D bounding box
+    ↓
+GTSAM Pose Graph
+    SL(4) manifold optimization
+    Loop closure keeps the global map consistent
+    ↓
+Spatial Agent (Claude / Gemini)
+    Interprets user intent, plans searches,
+    answers spatial questions with real geometry
 ```
 
-```
-python evals/process_logs_tum.py --submap_size 32
-```
+### Key Components
 
-To visualize the maps as they being constructed, inside the bash scripts add `--vis_map`. This will update the viser map each time the submap is updated. 
+| Component | Role |
+|-----------|------|
+| **Solver** (`solver.py`) | Central coordinator — owns the map, pose graph, retrieval system, and viewer |
+| **StreamingSLAM** (`server/streaming_slam.py`) | Wraps Solver for frame-by-frame WebSocket streaming |
+| **PoseGraph** (`graph.py`) | GTSAM SL(4) manifold optimization with inter-submap and loop closure constraints |
+| **ObjectDetector** (`object_detector.py`) | PE-Core CLIP + SAM3 for open-set 3D bounding box detection |
+| **SpatialAgent** (`server/spatial_agent.py`) | LLM-powered agent with SLAM-backed tools for spatial reasoning |
+| **ImageRetrieval** (`loop_closure.py`) | DINO-Salad descriptors for loop closure detection |
+| **Frontend** (`server/webserver/`) | Vite + TypeScript + Three.js — 3D viewer, camera sender, plan UI, summary page |
 
-## News and Updates
-* May 2025: VGGT-SLAM 1.0 is released
-* August 2025: SL(4) optimization is integrated into the official GTSAM repo
-* September 2025: VGGT-SLAM 1.0 Accepted to Neurips 2025
-* November 2025: VGGT-SLAM 1.0 Featured in MIT News [article](https://news.mit.edu/2025/teaching-robots-to-map-large-environments-1105)
-* January 2026: VGGT-SLAM 2.0 is released
+### Frontend Pages
 
-## Todo
+| Page | Purpose |
+|------|---------|
+| `index.html` | Live 3D SLAM viewer with point clouds and detections |
+| `sender.html` | Camera/video input — streams frames to the server |
+| `plan.html` | Agent plan visualization — mission planning UI |
+| `summary.html` | Detection summary — 2D floorplan + 3D overview + spatial Q&A |
 
-- [ ] Release real-time code. This code enables plugging in a Real Sense Camera and incrementally constructing a map 
-as the camera explored a scene. This has been tested on a Jetson Thor onboard a robot.
-- [ ] Add optional code to sparsify the visualized map as visualizing large point cloud maps can slow down the code.
+---
 
-## Acknowledgement
+## Impact
 
-This work was supported in part by the NSF Graduate Research Fellowship
-Program under Grant 2141064, the ARL DCIST program, and the ONR
-RAPID program.
+The people who need spatial awareness most are the ones who can least afford to wait.
 
-## Citation
+| Domain | Application |
+|--------|-------------|
+| **First Responders** | Pre-scan buildings before entering a fire or active scene |
+| **Accessibility** | Navigation context for the visually impaired in unfamiliar spaces |
+| **Disaster Response** | Rapid structural mapping in search-and-rescue operations |
+| **Construction** | Live spatial documentation without LiDAR hardware |
+| **Robotics** | Generate real-world 3D training data from any phone |
 
-If our code is helpful, please cite our papers as follows:
+The hardware barrier is gone. The deployment barrier is gone. What remains is the mission.
 
-```
-@article{maggio2025vggt-slam,
-  title={VGGT-SLAM: Dense RGB SLAM Optimized on the SL (4) Manifold},
-  author={Maggio, Dominic and Lim, Hyungtae and Carlone, Luca},
-  journal={Advances in Neural Information Processing Systems},
-  volume={39},
-  year={2025}
-}
-```
+---
 
-```
-@article{maggio2025vggt-slam2,
-  title={VGGT-SLAM 2.0: Real-time Dense Feed-forward Scene Reconstruction},
-  author={Maggio, Dominic and Carlone, Luca},
-  journal={arXiv preprint arXiv:2601.19887},
-  year={2026}
-}
-```
+## Built With
 
+Python · **Modal** · PyTorch · VGGT-1B · GTSAM · CLIP · SAM3 · DINO-Salad · Flask · Socket.IO · Three.js · Vite · TypeScript · Claude · Gemini
+
+---
+
+## Acknowledgements
+
+Open Reality builds on [VGGT-SLAM 2.0](https://arxiv.org/abs/2601.19887) by [Dominic Maggio](https://dominic101.github.io/DominicMaggio/) and [Luca Carlone](https://lucacarlone.mit.edu/) at MIT SPARK Lab. We extend their research-grade dense SLAM system into a cloud-native, agentic spatial AI platform — deployed on Modal, accessible from any phone, and powered by autonomous spatial reasoning.
+
+---
+
+<div align="center">
+
+**Open Reality** · HackIllinois 2026 · Modal Track
+
+*Spatial intelligence for anyone, anywhere.*
+
+</div>

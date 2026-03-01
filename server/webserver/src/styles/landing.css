@@ -1,0 +1,249 @@
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-primary);
+  font-family: var(--font-body);
+}
+
+/* ── Canvas Layers ── */
+
+.hero-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  pointer-events: auto;
+}
+
+.mesh-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* ── Demo Panel ── */
+
+.demo-quick-launch {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  padding: 10px;
+  width: min(380px, calc(100vw - 32px));
+  pointer-events: auto;
+}
+
+.demo-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.demo-row {
+  display: flex;
+  gap: 8px;
+}
+
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 155px;
+  overflow-y: auto;
+}
+
+.demo-thumb-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  transition: var(--transition);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.demo-thumb-btn.selected {
+  border-color: rgba(0, 240, 255, 0.6);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3) inset;
+}
+
+.demo-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.demo-thumb-name {
+  margin-top: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.demo-start-btn {
+  width: 100%;
+  padding: 8px 12px;
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid var(--panel-border);
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: var(--transition);
+  font-weight: 500;
+  font-family: var(--font-body);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Landing Overlay ── */
+
+.landing-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  background: radial-gradient(
+    circle at center,
+    rgba(0, 0, 0, 0.25) 0%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  transition: background 400ms ease, opacity 400ms ease, justify-content 0ms;
+  pointer-events: none;
+}
+
+.landing-overlay.active {
+  justify-content: flex-start;
+  background: radial-gradient(circle at 70% 50%, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.5) 100%);
+}
+
+/* ── Landing Content ── */
+
+.landing-content {
+  max-width: 640px;
+  width: 90%;
+  text-align: center;
+  padding: 40px;
+  transition: transform 600ms cubic-bezier(.2,.9,.2,1), opacity 400ms ease, text-align 0ms, margin 600ms cubic-bezier(.2,.9,.2,1);
+  pointer-events: auto;
+}
+
+.landing-content.active {
+  text-align: left;
+  margin-left: 5vw;
+  opacity: 0.95;
+}
+
+.landing-content.active .feature-badges {
+  justify-content: flex-start;
+}
+
+/* ── Kicker ── */
+
+.landing-kicker {
+  margin: 0 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+/* ── Title ── */
+
+.landing-title {
+  font-size: clamp(40px, 6vw, 72px);
+  font-weight: 700;
+  margin: 0 0 14px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+/* ── Tagline ── */
+
+.landing-tagline {
+  font-size: clamp(16px, 2.5vw, 20px);
+  color: var(--text-secondary);
+  margin: 0 0 28px 0;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+/* ── Badges row spacing ── */
+
+.landing-content .feature-badges {
+  margin-bottom: 36px;
+}
+
+/* ── Prompt Form ── */
+
+.prompt-form {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.prompt-input {
+  width: 100%;
+  min-height: 80px;
+  resize: vertical;
+  font-size: 15px;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.prompt-form .btn-glow {
+  width: 100%;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 768px) {
+  .landing-content {
+    padding: 20px;
+  }
+
+  .landing-tagline {
+    margin-bottom: 20px;
+  }
+
+  .landing-content .feature-badges {
+    margin-bottom: 24px;
+  }
+
+  .prompt-form {
+    padding: 20px;
+  }
+
+  .landing-kicker {
+    font-size: 10px;
+  }
+}
