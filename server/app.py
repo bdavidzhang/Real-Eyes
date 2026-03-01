@@ -1234,9 +1234,14 @@ async def handle_agent_set_goal(sid, data):
         return
 
     goal = str(data.get("goal", "")).strip()
-    if goal:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(_agent_executor, state.agent.set_goal, goal)
+    initial_queries = [str(q) for q in data.get("initial_queries", []) if q]
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        _agent_executor,
+        state.agent.set_initial_context,
+        goal,
+        initial_queries,
+    )
 
 
 @sio.on("agent_toggle")

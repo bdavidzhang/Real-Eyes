@@ -360,9 +360,9 @@ export class SLAMConnection {
     }
   }
 
-  setAgentGoal(goal: string): void {
+  setAgentGoal(goal: string, initialQueries?: string[]): void {
     if (this.socket && this.isConnected()) {
-      this.socket.emit('agent_set_goal', { goal });
+      this.socket.emit('agent_set_goal', { goal, initial_queries: initialQueries ?? [] });
     }
   }
 

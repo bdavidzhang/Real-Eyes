@@ -538,6 +538,12 @@ class SLAMViewerApp {
             this.connection.setDetectionQueries(objects);
             this.uiManager.updateDetectionQueries(objects);
             console.log('✅ Detection targets set:', objects);
+
+            const userPrompt = sessionStorage.getItem('userPrompt') ?? '';
+            if (userPrompt || objects.length > 0) {
+              this.connection.setAgentGoal(userPrompt, objects);
+              console.log('✅ Agent context set:', { goal: userPrompt, initial_queries: objects });
+            }
           }, 500);
         }, 100);
 
@@ -547,6 +553,7 @@ class SLAMViewerApp {
         sessionStorage.removeItem('pathfindingEnabled');
         sessionStorage.removeItem('trackingSource');
         sessionStorage.removeItem('demoVideoId');
+        sessionStorage.removeItem('userPrompt');
       }
     }
   }

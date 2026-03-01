@@ -5,7 +5,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 VGGT-SLAM 2.0 is a real-time dense feed-forward monocular SLAM system that uses the VGGT model for depth/pose prediction and optimizes on the SL(4) manifold via GTSAM. It supports loop closure detection, open-set 3D object detection, and interactive 3D visualization.
-k
 
 ## Setup & Installation
 
@@ -69,6 +68,8 @@ python evals/process_logs_tum.py --submap_size 32
 
 Set `abs_dir` in the eval shell scripts to your MASt3R-SLAM dataset download location.
 
+There is no automated test suite. Validate changes by running against `office_loop/` sample data or demo videos in `server/demo_videos/`.
+
 ## Cloud Deployment (Modal)
 
 Two Modal deployment scripts exist for different use cases:
@@ -108,8 +109,8 @@ modal run modal_streaming.py::app.download_models
 ```
 
 **How it works:**
-1. `@modal.web_server(port=5000)` gives a stable `*.modal.run` URL; `min_containers=1` keeps the container warm
-2. On startup, `run_streaming_server()` calls `start_server()` in a daemon thread (the decorator expects the function to return after launching the server)
+1. `@modal.asgi_app()` exposes an ASGI endpoint (Starlette); serves both HTTP and WebSocket
+2. `min_containers=1, allow_concurrent_inputs=100` keeps the container warm and handles concurrent clients
 3. The **frontend is built inside the Docker image** at build time (`npm install && npx vite build`) and served as static files — no separate Vite dev server needed in production
 4. Configuration via environment variables (`SUBMAP_SIZE`, `MIN_DISPARITY`, `CONF_THRESHOLD`, `VIS_STRIDE`) set in Modal dashboard or secrets
 5. Uses `modal.Secret` for `huggingface-secret` and `gemini-secret`
@@ -180,6 +181,50 @@ Wraps `Solver` for frame-by-frame streaming (no Viser, `skip_viewer=True`).
 - `_dedup_and_store()` deduplicates overlapping 3D boxes across submaps
 
 **Soft reset** (`soft_reset()`): clears all SLAM state and temp files without reloading VGGT or CLIP models; re-attaches CLIP model to solver after `solver.reset()`.
+
+## Spatial Agent System
+
+The `agents` branch adds an autonomous spatial intelligence layer:
+
+**Key files:**
+- `server/spatial_agent.py` — `SpatialAgent` orchestrates exploration using an LLM (OpenRouter, default `anthropic/claude-3.5-sonnet-20241022`)
+- `server/agent/runtime.py` — `AgentRuntime` manages validated tool execution + SocketIO event emission
+- `server/agent/schemas.py` — Pydantic schemas for tool args/returns (GetSceneSnapshot, SearchObjects, LocateObject3D, etc.)
+- `server/agent/tool_registry.py` — `ToolRegistry` for registering/executing SLAM-backed tools
+- `server/agent/tools/vggt_tools.py` — SLAM-backed tools (scene snapshot, object search, 3D detection)
+- `server/agent/tools/ui_tools.py` — UI commands (waypoints, beacons, detection previews)
+- `server/llm/openrouter_client.py` — OpenRouter client with retries, fallbacks, JSON parsing
+
+**Integration:** Agent sessions are managed in `server/app.py`; agent goals/findings are visualized on `plan.html` and `summary.html` in the frontend.
+
+**Config env vars (Modal or local):**
+- `SPATIAL_ORCH_MODEL` — LLM model (default `anthropic/claude-3.5-sonnet-20241022`)
+- `CORS_ALLOWED_ORIGINS` — CORS policy (default `*`)
+
+Modal secrets needed: `huggingface-secret`, `gemini-secret`, and OpenRouter key.
+
+## Frontend (server/webserver/)
+
+Built with Vite + TypeScript. Multiple entry points configured in `vite.config.ts`:
+- `index.html` — 3D SLAM viewer (main.ts)
+- `sender.html` — Camera/video input (sender.ts)
+- `plan.html` — Agent plan visualization (plan.ts)
+- `summary.html` — Detection summary (summary.ts)
+- `viewer.html` — Headless viewer
+- `detection-debug.html` — Debug overlay
+
+**Scripts:**
+```bash
+cd server/webserver
+npm run dev      # Dev server on :3000
+npm run build    # Bundle to dist/
+```
+
+**Key source layout:**
+- `src/services/` — SLAMConnection (Socket.IO), SceneManager, DedalusAPI
+- `src/components/` — Three.js scene, UI manager, AgentPanel
+
+**Local HTTPS:** Uses `server/webserver/server.cert` + `server.key` (required for phone camera access via WebRTC). Modal deployment skips SSL since the tunnel provides HTTPS.
 
 ## Architecture
 

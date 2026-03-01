@@ -357,7 +357,9 @@ class SpatialAgent:
             "You are an object spotting subagent for a real-world mapping system. "
             "List only concrete visible objects. Output strict JSON only."
         )
+        goal_context = f"User goal: {self.current_goal}\n\n" if self.current_goal else ""
         user_prompt = (
+            f"{goal_context}"
             "Return JSON: {\"objects\":[{\"name\":\"object name\","
             "\"count_estimate\":1,\"location_hint\":\"where\"}]}."
         )
@@ -890,11 +892,23 @@ class SpatialAgent:
             )
             return fallback
 
-    def set_goal(self, goal: str):
+    def set_initial_context(self, goal: str, initial_queries: list[str]) -> None:
         self.current_goal = (goal or "").strip() or None
         if self.current_goal:
-            self._emit_action("goal_updated", f"New goal set: {self.current_goal}")
+            self._emit_action("goal_updated", f"Goal: {self.current_goal}")
+
+        if initial_queries:
+            self._create_mission(
+                category="user_specified",
+                goal=f"Locate user-specified objects: {', '.join(initial_queries)}",
+                queries=list(initial_queries),
+            )
+            self._sync_detection_queries()
+
         self._emit_state()
+
+    def set_goal(self, goal: str) -> None:
+        self.set_initial_context(goal, [])
 
     # ------------------------------------------------------------------
     # Detection routing and query sync
@@ -985,10 +999,18 @@ class SpatialAgent:
             confidence = float(det.get("confidence", 0.0) or 0.0)
             self.discovered_objects.setdefault(query, []).append(det)
 
+            already_found = any(
+                query in mission.found
+                for mission in self.missions.values()
+                if query in mission.queries
+            )
+
             for mission in self.missions.values():
                 if mission.status == "completed":
                     continue
                 if query in mission.queries:
+                    if query in mission.found:
+                        continue  # already reported; skip duplicate emission
                     mission.found.add(query)
                     mission.findings.append(det)
                     mission.confidence = len(mission.found) / max(1, len(mission.queries))
@@ -1001,18 +1023,19 @@ class SpatialAgent:
                             {"mission_id": mission.id},
                         )
 
-            evidence = {
-                "matched_submap": det.get("matched_submap"),
-                "matched_frame": det.get("matched_frame"),
-            }
-            self._emit_finding(
-                query=query,
-                description=f"Found {query} ({confidence:.0%})",
-                confidence=confidence,
-                position=det.get("bounding_box", {}).get("center") if det.get("bounding_box") else None,
-                mission_id=self._find_mission_for_query(query),
-                evidence=evidence,
-            )
+            if not already_found:
+                evidence = {
+                    "matched_submap": det.get("matched_submap"),
+                    "matched_frame": det.get("matched_frame"),
+                }
+                self._emit_finding(
+                    query=query,
+                    description=f"Found {query} ({confidence:.0%})",
+                    confidence=confidence,
+                    position=det.get("bounding_box", {}).get("center") if det.get("bounding_box") else None,
+                    mission_id=self._find_mission_for_query(query),
+                    evidence=evidence,
+                )
 
         for mission in self.missions.values():
             if mission.status == "completed":

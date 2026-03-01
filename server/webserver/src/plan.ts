@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const params = new URLSearchParams(window.location.search);
   const prompt = params.get('prompt');
+  sessionStorage.setItem('userPrompt', prompt ?? '');
   trackingSource = params.get('mode') === 'demo' ? 'demo' : 'live';
   selectedDemoVideoId = params.get('video_id');
 

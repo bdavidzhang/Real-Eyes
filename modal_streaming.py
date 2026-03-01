@@ -65,8 +65,9 @@ image = (
         "python-socketio",
         "asgiref",
         "uvicorn",
-        "openai>=1.30",
-        "pydantic>=2.8",
+        "google-generativeai",
+        "openai",
+        "anthropic",
         # Misc
         "termcolor",
         "tqdm",
@@ -108,14 +109,11 @@ image = (
     .add_local_dir("vggt_slam", remote_path="/root/project/vggt_slam", copy=True)
     .add_local_file("setup.py", remote_path="/root/project/setup.py", copy=True)
     .run_commands("cd /root/project && pip install -e .")
-    # Server code (exclude node_modules/dist which have macOS-specific binaries)
+    # Server code
     .add_local_dir("server", remote_path="/root/project/server", copy=True)
-    # Build frontend inside the image — remove stale node_modules first
+    # Build frontend inside the image
     .run_commands(
-        "cd /root/project/server/webserver"
-        " && rm -rf node_modules dist"
-        " && npm install"
-        " && npx vite build"
+        "cd /root/project/server/webserver && npm install && npx vite build"
     )
 )
 
@@ -178,17 +176,18 @@ def download_models():
 # ---------------------------------------------------------------------------
 @app.function(
     image=image,
-    gpu="H100",
+    gpu="A100-80GB",
     volumes={CACHE_PATH: model_cache},
     secrets=[
         modal.Secret.from_name("huggingface-secret"),
+        modal.Secret.from_name("gemini-secret"),
         modal.Secret.from_name("openrouter-secret"),
     ],
     timeout=86400,
     min_containers=1,
     max_containers=1,
+    allow_concurrent_inputs=100,
 )
-@modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def web():
     import sys
